@@ -95,6 +95,7 @@ type DatasetItem = {
   relativePath: string;
   captionExists: boolean;
   captionText: string;
+  tags: string[];
   tagCount: number;
   width?: number | null;
   height?: number | null;
@@ -328,6 +329,27 @@ function planCommand(plan?: LaunchPlan): string {
 
 function imageSrc(path: string): string {
   return convertFileSrc(path, "asset");
+}
+
+function splitCaptionTags(text: string): string[] {
+  const cleaned = text.replaceAll("\r\n", "\n").replaceAll("\r", "\n").trim();
+  if (!cleaned) return [];
+  const parts = cleaned.includes(",") ? cleaned.split(",") : cleaned.split("\n");
+  return parts.map((tag) => tag.trim()).filter(Boolean);
+}
+
+function joinCaptionTags(tags: string[]): string {
+  return tags.map((tag) => tag.trim()).filter(Boolean).join(", ");
+}
+
+function classifyTag(tag: string): string {
+  const value = tag.trim().toLowerCase();
+  if (value.startsWith("@") || ["1girl", "1boy", "girl", "boy", "solo"].includes(value)) return "tag-char";
+  if (["hair", "eyes", "skin", "body", "face"].some((part) => value.includes(part))) return "tag-char";
+  if (["shirt", "skirt", "pants", "dress", "uniform", "clothes", "wearing", "jacket"].some((part) => value.includes(part))) return "tag-clothes";
+  if (["background", "outdoor", "indoor", "room", "sky", "tree", "nature"].some((part) => value.includes(part))) return "tag-bg";
+  if (["masterpiece", "best quality", "highres", "year", "score", "rating"].some((part) => value.includes(part))) return "tag-meta";
+  return "tag-general";
 }
 
 function getPath(obj: any, path: string, fallback: unknown = ""): any {
@@ -625,6 +647,36 @@ function imageSizeLabel(item: DatasetItem): string {
   return item.width && item.height ? `${item.width} x ${item.height}` : "-";
 }
 
+function datasetTagSuggestions(scan?: DatasetScan): string {
+  const tags = new Set<string>();
+  scan?.items.forEach((item) => {
+    const itemTags = item.tags?.length ? item.tags : splitCaptionTags(item.captionText);
+    itemTags.forEach((tag) => tags.add(tag));
+  });
+  return Array.from(tags).sort((left, right) => left.localeCompare(right)).map((tag) => `<option value="${escapeHtml(tag)}"></option>`).join("");
+}
+
+function renderTagChip(tag: string, index: number): string {
+  return `<button class="caption-tag-chip ${classifyTag(tag)}" type="button" data-remove-tag-index="${index}" title="Remove tag"><span>${escapeHtml(tag)}</span><span class="tag-chip-remove">x</span></button>`;
+}
+
+function renderSelectedTagsEditor(selected: DatasetItem, scan?: DatasetScan): string {
+  const tags = splitCaptionTags(state.dataset.draftCaption);
+  const chips = tags.length ? tags.map(renderTagChip).join("") : `<span class="tag-empty">No tags</span>`;
+  return `
+    <div class="visual-caption-editor">
+      <div class="tag-chip-grid" id="tag-chip-grid">
+        ${chips}
+        <input id="tag-add-input" class="tag-add-input" list="dataset-tag-suggestions" placeholder="+ add tag" autocomplete="off">
+      </div>
+      <datalist id="dataset-tag-suggestions">${datasetTagSuggestions(scan)}</datalist>
+    </div>
+    <details class="raw-caption-details">
+      <summary>Raw caption text</summary>
+      <textarea id="caption-editor" class="raw-caption-editor" spellcheck="false">${escapeHtml(state.dataset.draftCaption || selected.captionText)}</textarea>
+    </details>`;
+}
+
 function renderDatasetStudio(): string {
   const d = state.dataset;
   const scan = d.scan;
@@ -680,19 +732,21 @@ function renderDatasetStudio(): string {
           <div class="dataset-list">
             ${scan.items.map((item) => {
               const issues = item.issues.length ? item.issues.map((issue) => `<span class="issue-pill">${escapeHtml(issue)}</span>`).join("") : `<span class="issue-pill issue-ok">ok</span>`;
+              const rowTags = (item.tags?.length ? item.tags : splitCaptionTags(item.captionText)).slice(0, 5);
+              const rowTagList = rowTags.length ? `<span class="dataset-row-tags">${rowTags.map((tag) => `<span class="mini-tag ${classifyTag(tag)}">${escapeHtml(tag)}</span>`).join("")}</span>` : `<span class="dataset-row-tags"><span class="mini-tag empty">empty</span></span>`;
               return `<button class="dataset-row ${item.imagePath === d.selectedImagePath ? "selected" : ""}" type="button" data-image-path="${escapeHtml(item.imagePath)}">
                 <img src="${escapeHtml(imageSrc(item.imagePath))}" alt="" loading="lazy">
-                <span class="dataset-row-main"><strong>${escapeHtml(item.relativePath)}</strong><span>${escapeHtml(imageSizeLabel(item))} / ${item.tagCount} tags</span><span class="issue-list">${issues}</span></span>
+                <span class="dataset-row-main"><strong>${escapeHtml(item.relativePath)}</strong><span>${escapeHtml(imageSizeLabel(item))} / ${item.tagCount} tags</span>${rowTagList}<span class="issue-list">${issues}</span></span>
               </button>`;
             }).join("")}
           </div>
         </div>
         <section class="panel editor-panel">
           ${selected ? `
-            <div class="section-title"><div><h2>Caption Editor</h2><p class="muted mono">${escapeHtml(selected.captionPath)}</p></div>${statusPill(selected.captionExists, "Exists", "Will create")}</div>
+            <div class="section-title"><div><h2>Visual Tag Editor</h2><p class="muted mono">${escapeHtml(selected.captionPath)}</p></div>${statusPill(selected.captionExists, "Exists", "Will create")}</div>
             <div class="preview-block"><img src="${escapeHtml(imageSrc(selected.imagePath))}" alt=""><dl class="details"><div><dt>Image</dt><dd>${escapeHtml(selected.relativePath)}</dd></div><div><dt>Size</dt><dd>${escapeHtml(imageSizeLabel(selected))}</dd></div><div><dt>Tags</dt><dd>${selected.tagCount}</dd></div></dl></div>
-            <textarea id="caption-editor" spellcheck="false">${escapeHtml(d.draftCaption)}</textarea>
-            <div class="action-row"><button class="primary-button" id="save-caption" type="button">Save Caption</button><button class="secondary-button" id="reload-dataset" type="button">Rescan</button></div>
+            ${renderSelectedTagsEditor(selected, scan)}
+            <div class="action-row"><button class="primary-button" id="save-caption" type="button">Save Caption</button><button class="secondary-button" id="reload-dataset" type="button">Rescan</button><button class="secondary-button" id="run-tagger-from-dataset" type="button">Run WD14 Tagger</button></div>
           ` : `<h2>Caption Editor</h2><p class="muted">Select an image.</p>`}
         </section>
       </section>
@@ -1177,7 +1231,12 @@ function bindEvents(): void {
     render();
   }));
   document.querySelector("#caption-editor")?.addEventListener("input", (event) => state.dataset.draftCaption = (event.target as HTMLTextAreaElement).value);
+  document.querySelector("#tag-add-input")?.addEventListener("keydown", (event) => void handleTagAddInput(event as KeyboardEvent));
+  document.querySelectorAll<HTMLButtonElement>("[data-remove-tag-index]").forEach((button) => {
+    button.addEventListener("click", () => void removeSelectedTag(Number(button.dataset.removeTagIndex)));
+  });
   document.querySelector("#save-caption")?.addEventListener("click", () => void saveSelectedCaption());
+  document.querySelector("#run-tagger-from-dataset")?.addEventListener("click", () => void runTaggerForCurrentDataset());
   document.querySelector("#apply-bulk-operation")?.addEventListener("click", () => { syncBulkControls(); void applyBulkOperation(); });
   document.querySelector("#create-job")?.addEventListener("click", () => void createJob());
   document.querySelector("#reload-jobs")?.addEventListener("click", () => void loadJobs());
@@ -1457,11 +1516,110 @@ async function scanDataset(): Promise<void> {
   }
 }
 
+function updateSelectedCaptionLocally(result: SaveCaptionResult): void {
+  const selected = selectedDatasetItem();
+  state.dataset.draftCaption = result.captionText;
+  if (!selected) return;
+
+  const scan = state.dataset.scan;
+  const hadCaption = selected.captionExists;
+  const hadMissingIssue = selected.issues.includes("missing_caption");
+  const hadEmptyIssue = selected.issues.includes("empty_caption");
+  const isEmpty = !result.captionText.trim();
+
+  selected.captionExists = true;
+  selected.captionText = result.captionText;
+  selected.tags = result.tags;
+  selected.tagCount = result.tagCount;
+  selected.issues = selected.issues.filter((issue) => issue !== "missing_caption" && issue !== "empty_caption");
+  if (isEmpty) selected.issues.push("empty_caption");
+
+  if (scan) {
+    if (!hadCaption) scan.captionCount += 1;
+    if (hadMissingIssue) scan.missingCaptionCount = Math.max(0, scan.missingCaptionCount - 1);
+    if (hadEmptyIssue && !isEmpty) scan.emptyCaptionCount = Math.max(0, scan.emptyCaptionCount - 1);
+    if (!hadEmptyIssue && isEmpty) scan.emptyCaptionCount += 1;
+    scan.issueCount = scan.items.filter((item) => item.issues.length).length;
+  }
+}
+
 async function saveSelectedCaption(): Promise<void> {
   const selected = selectedDatasetItem();
   if (!selected) return;
-  await bridgeData("dataset_save_caption", { captionPath: selected.captionPath, text: state.dataset.draftCaption });
-  await scanDataset();
+  try {
+    const result = await bridgeData<SaveCaptionResult>("dataset_save_caption", { captionPath: selected.captionPath, text: state.dataset.draftCaption });
+    updateSelectedCaptionLocally(result);
+    state.dataset.message = `Saved ${result.tagCount} tags.`;
+    state.dataset.error = undefined;
+    render();
+  } catch (error) {
+    state.dataset.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}
+
+function setSelectedTags(tags: string[]): void {
+  const normalized = tags.map((tag) => tag.trim()).filter(Boolean);
+  const text = joinCaptionTags(normalized);
+  state.dataset.draftCaption = text;
+  const selected = selectedDatasetItem();
+  if (selected) {
+    selected.captionText = text;
+    selected.tags = normalized;
+    selected.tagCount = normalized.length;
+  }
+}
+
+async function removeSelectedTag(index: number): Promise<void> {
+  if (!Number.isInteger(index)) return;
+  const tags = splitCaptionTags(state.dataset.draftCaption);
+  if (index < 0 || index >= tags.length) return;
+  tags.splice(index, 1);
+  setSelectedTags(tags);
+  await saveSelectedCaption();
+}
+
+function tagsFromInput(value: string): string[] {
+  return value.split(/[,\n]/).map((tag) => tag.trim()).filter(Boolean);
+}
+
+async function addTagsToSelected(raw: string): Promise<void> {
+  const incoming = tagsFromInput(raw);
+  if (!incoming.length) return;
+
+  const tags = splitCaptionTags(state.dataset.draftCaption);
+  const existing = new Set(tags.map((tag) => tag.toLowerCase()));
+  let changed = false;
+  for (const tag of incoming) {
+    const key = tag.toLowerCase();
+    if (existing.has(key)) continue;
+    tags.push(tag);
+    existing.add(key);
+    changed = true;
+  }
+
+  if (!changed) return;
+  setSelectedTags(tags);
+  await saveSelectedCaption();
+}
+
+async function handleTagAddInput(event: KeyboardEvent): Promise<void> {
+  const input = event.target instanceof HTMLInputElement ? event.target : undefined;
+  if (!input) return;
+  if (event.key !== "Enter" && event.key !== ",") return;
+  event.preventDefault();
+  const value = input.value.trim();
+  input.value = "";
+  await addTagsToSelected(value);
+}
+
+async function runTaggerForCurrentDataset(): Promise<void> {
+  if (!state.dataset.root) return;
+  state.tagger.datasetRoot = state.dataset.root;
+  state.view = "tagger";
+  queuePersistUiState();
+  render();
+  await runTagger();
 }
 
 async function applyBulkOperation(): Promise<void> {
