@@ -673,6 +673,12 @@ def default_job(name: str, settings: dict[str, Any] | None = None) -> dict[str, 
             "runName": "",
             "tags": "",
         },
+        "postActions": {
+            "convertToComfy": True,
+            "keepUnet": False,
+            "shutdown": False,
+            "shutdownDelaySeconds": 60,
+        },
         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
 
@@ -1329,6 +1335,104 @@ def make_plan(process_id: str, kind: str, cwd: Path, command: str, args: list[st
     }
     persist_launch_plan(plan)
     return plan
+
+
+def find_comfy_converter(engine_root: Path) -> Path | None:
+    candidates = [
+        engine_root / "networks" / "convert_anima_lora_to_comfy.py",
+        DEFAULT_SD_SCRIPTS_ROOT / "networks" / "convert_anima_lora_to_comfy.py",
+        KNOWN_TOOL_ROOT / "sd-scripts" / "networks" / "convert_anima_lora_to_comfy.py",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def comfy_paths_for_job(job: dict[str, Any], files: dict[str, str]) -> tuple[Path, Path]:
+    output_name = str(job.get("training", {}).get("outputName") or job["name"])
+    output_dir = Path(files["outputDir"])
+    return output_dir / f"{output_name}.safetensors", output_dir / f"{output_name}_comfy.safetensors"
+
+
+def write_train_pipeline_script(
+    job: dict[str, Any],
+    files: dict[str, str],
+    train_args: list[str],
+    converter: Path | None,
+    engine_root: Path,
+) -> Path:
+    post = job.get("postActions", {})
+    source_path, target_path = comfy_paths_for_job(job, files)
+    keep_unet = bool(post.get("keepUnet"))
+    shutdown = bool(post.get("shutdown"))
+    delay = max(0, int(post.get("shutdownDelaySeconds") or 60))
+    convert = bool(post.get("convertToComfy"))
+    script_path = Path(files["root"]) / "_run_train_pipeline.py"
+    script = f"""from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+TRAIN_ARGS = {json.dumps(train_args, ensure_ascii=False, indent=2)}
+CONVERT = {repr(convert)}
+CONVERTER = {json.dumps(str(converter) if converter else "")}
+SOURCE = {json.dumps(str(source_path))}
+TARGET = {json.dumps(str(target_path))}
+KEEP_UNET = {repr(keep_unet)}
+SHUTDOWN = {repr(shutdown)}
+SHUTDOWN_DELAY = {repr(delay)}
+
+
+def run_step(label: str, cmd: list[str]) -> int:
+    print(f"--- {{label}} ---", flush=True)
+    print(" ".join(cmd), flush=True)
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line, end="", flush=True)
+    return process.wait()
+
+
+def main() -> int:
+    train_code = run_step("Training", [sys.executable, *TRAIN_ARGS])
+    if train_code != 0:
+        print(f"Training failed with exit code {{train_code}}. Skipping post actions.", flush=True)
+        return train_code
+
+    if CONVERT:
+        if not CONVERTER or not Path(CONVERTER).exists():
+            print(f"ComfyUI converter not found: {{CONVERTER}}", flush=True)
+            return 1
+        if not Path(SOURCE).exists():
+            print(f"Training output not found for conversion: {{SOURCE}}", flush=True)
+            return 1
+        convert_code = run_step("Convert to ComfyUI", [sys.executable, CONVERTER, SOURCE, TARGET])
+        if convert_code != 0:
+            return convert_code
+        if not KEEP_UNET and Path(SOURCE).exists():
+            print(f"Deleting source UNET LoRA: {{SOURCE}}", flush=True)
+            Path(SOURCE).unlink()
+        print(f"ComfyUI LoRA written: {{TARGET}}", flush=True)
+
+    if SHUTDOWN:
+        if os.name == "nt":
+            print(f"Shutdown requested. Windows will shut down in {{SHUTDOWN_DELAY}} seconds. Abort with: shutdown /a", flush=True)
+            subprocess.call(["shutdown", "/s", "/t", str(SHUTDOWN_DELAY)])
+        else:
+            print("Shutdown requested, but automatic shutdown is only implemented for Windows.", flush=True)
+
+    print("--- Pipeline Finished ---", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"""
+    write_text(script_path, script)
+    return script_path
 
 
 def normalize_agent_provider(provider: Any) -> str:
@@ -2084,12 +2188,23 @@ def train_launch_plan(payload: dict[str, Any]) -> dict[str, Any]:
         ]
     env = process_env_for_job(job)
     env["PYTHONPATH"] = str(engine_root)
-    plan = make_plan(f"train:{job['name']}", "train", engine_root, python, args, env, files)
+    post = job.get("postActions", {})
+    wants_convert = bool(post.get("convertToComfy"))
+    wants_shutdown = bool(post.get("shutdown"))
+    converter = find_comfy_converter(engine_root) if wants_convert else None
+    if wants_convert or wants_shutdown:
+        pipeline_script = write_train_pipeline_script(job, files, args, converter, engine_root)
+        files["trainPipelineScript"] = str(pipeline_script)
+        plan = make_plan(f"train:{job['name']}", "train", engine_root, python, [str(pipeline_script)], env, files)
+    else:
+        plan = make_plan(f"train:{job['name']}", "train", engine_root, python, args, env, files)
     errors = []
     if not engine_root.exists():
         errors.append(f"engine root not found: {engine_root}")
     if not script.exists():
         errors.append(f"training script not found: {script}")
+    if wants_convert and not converter:
+        errors.append("ComfyUI converter not found: networks/convert_anima_lora_to_comfy.py")
     errors.extend(model_path_errors(job, engine_type))
     if engine_type == "sd_scripts":
         errors.extend(sd_scripts_option_errors(job))
@@ -2105,6 +2220,76 @@ def train_launch_plan(payload: dict[str, Any]) -> dict[str, Any]:
     if errors and not payload.get("allowInvalid"):
         return failure("train_launch_plan", errors, {"plan": plan})
     return success("train_launch_plan", {"job": job, "plan": plan, "errors": errors})
+
+
+def engine_setup_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    settings = load_settings_dict()
+    name = str(payload.get("name") or "").strip()
+    if name:
+        job = load_job_dict(name, settings)
+        engine = get_engine(settings, job.get("engineId"))
+    else:
+        engine = get_engine(settings, str(payload.get("engineId") or settings.get("defaultEngineId") or ""))
+    engine_type = str(engine.get("type") or "anima_standalone")
+    engine_root = Path(str(engine.get("root") or DEFAULT_ENGINE_ROOT)).resolve()
+    engine_id = sanitize_name(str(engine.get("id") or engine_root.name))
+    args = [
+        "-m",
+        "lora_training_gui.engine_setup",
+        "--engine-root",
+        str(engine_root),
+        "--engine-type",
+        engine_type,
+    ]
+    env = {"PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(PROJECT_ROOT / "python")}
+    plan = make_plan(f"engine_setup:{engine_id}", "engine_setup", PROJECT_ROOT, sys.executable, args, env, {"engineRoot": str(engine_root)})
+    errors: list[str] = []
+    if engine_type in {"workflow_reference", "sd_scripts_reference"}:
+        errors.append(f"engine is a reference, not an execution engine: {engine.get('id')}")
+    if not engine_root.exists():
+        errors.append(f"engine root not found: {engine_root}")
+    if errors and not payload.get("allowInvalid"):
+        return failure("engine_setup_plan", errors, {"plan": plan})
+    return success("engine_setup_plan", {"plan": plan, "engine": engine, "errors": errors})
+
+
+def comfy_convert_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        return failure("comfy_convert_plan", ["name is required"])
+    settings = load_settings_dict()
+    job = load_job_dict(name, settings)
+    engine = get_engine(settings, job.get("engineId"))
+    engine_root = Path(str(engine.get("root") or DEFAULT_ENGINE_ROOT)).resolve()
+    files = build_job_files(job, settings)
+    python = engine_python(engine)
+    converter = find_comfy_converter(engine_root)
+    default_source, default_target = comfy_paths_for_job(job, files)
+    source = Path(str(payload.get("source") or default_source)).expanduser().resolve()
+    if not source.exists():
+        latest = latest_safetensors(Path(files["outputDir"]))
+        if latest:
+            source = Path(latest).resolve()
+    target = Path(str(payload.get("target") or default_target)).expanduser().resolve()
+    args = [str(converter) if converter else "", str(source), str(target)]
+    converter_root = converter.parents[1] if converter and len(converter.parents) > 1 else engine_root
+    env = {
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": os.pathsep.join([str(engine_root), str(converter_root)]),
+    }
+    files["comfySource"] = str(source)
+    files["comfyTarget"] = str(target)
+    if converter:
+        files["comfyConverter"] = str(converter)
+    plan = make_plan(f"convert:{job['name']}", "convert", converter_root, python, args, env, files)
+    errors = []
+    if not converter:
+        errors.append("ComfyUI converter not found: networks/convert_anima_lora_to_comfy.py")
+    if not source.exists():
+        errors.append(f"source LoRA not found: {source}")
+    if errors and not payload.get("allowInvalid"):
+        return failure("comfy_convert_plan", errors, {"plan": plan})
+    return success("comfy_convert_plan", {"job": job, "plan": plan, "errors": errors})
 
 
 def find_free_port(start: int = 6006) -> int:
@@ -2678,6 +2863,8 @@ JOBS = {
     "job_delete": job_delete,
     "job_build_files": job_build_files,
     "train_launch_plan": train_launch_plan,
+    "engine_setup_plan": engine_setup_plan,
+    "comfy_convert_plan": comfy_convert_plan,
     "tensorboard_launch_plan": tensorboard_launch_plan,
     "sample_launch_plan": sample_launch_plan,
     "tagger_model_status": tagger_model_status,

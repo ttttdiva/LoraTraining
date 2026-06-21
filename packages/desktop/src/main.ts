@@ -950,6 +950,8 @@ function renderJobEditor(): string {
   if (!state.jobDraft) return `<section class="panel"><p class="muted">Select or create a job.</p></section>`;
   const job = state.jobDraft;
   const trainId = `train:${job.name}`;
+  const setupId = `engine_setup:${String(job.engineId || "engine").replaceAll(" ", "_")}`;
+  const convertId = `convert:${job.name}`;
   const tbId = `tensorboard:${job.name}`;
   const sampleId = `sample:${job.name}`;
   return `
@@ -1001,6 +1003,10 @@ function renderJobEditor(): string {
         ${checkbox("network.trainUnetOnly", "Train UNet only")}
         ${checkbox("sdScripts.v2", "SD v2")}
         ${checkbox("sdScripts.vParameterization", "v-parameterization")}
+        ${checkbox("postActions.convertToComfy", "Convert to ComfyUI after training")}
+        ${checkbox("postActions.keepUnet", "Keep source UNET LoRA after conversion")}
+        ${checkbox("postActions.shutdown", "Shutdown Windows after training")}
+        ${input("postActions.shutdownDelaySeconds", "Shutdown delay seconds", "number")}
       </div>
       <div class="grid two">
         ${textarea("training.optimizerArgs", "Optimizer args", "weight_decay=0.01")}
@@ -1022,9 +1028,13 @@ function renderJobEditor(): string {
     <section class="panel">
       <div class="section-title"><h2>Run</h2><span class="pill">launch plans and logs</span></div>
       <div class="action-row">
+        <button class="secondary-button" id="plan-engine-setup" type="button">Plan Engine Setup</button>
+        <button class="secondary-button" id="start-engine-setup" type="button" ${state.plans.engineSetup ? "" : "disabled"}>Run Setup</button>
         <button class="primary-button" id="plan-train" type="button">Plan Training</button>
         <button class="primary-button" id="start-train" type="button" ${state.plans.train ? "" : "disabled"}>Start Training</button>
         <button class="secondary-button" data-stop-process="${trainId}" type="button">Stop Training</button>
+        <button class="secondary-button" id="plan-convert" type="button">Plan ComfyUI Convert</button>
+        <button class="secondary-button" id="start-convert" type="button" ${state.plans.convert ? "" : "disabled"}>Run Convert</button>
         <button class="secondary-button" id="plan-tensorboard" type="button">Plan TensorBoard</button>
         <button class="secondary-button" id="start-tensorboard" type="button" ${state.plans.tensorboard ? "" : "disabled"}>Start TensorBoard</button>
         ${state.plans.tensorboard?.url ? `<a class="link-button" href="${escapeHtml(state.plans.tensorboard.url)}" target="_blank">Open TensorBoard</a>` : ""}
@@ -1032,8 +1042,8 @@ function renderJobEditor(): string {
         <button class="secondary-button" id="start-sample" type="button" ${state.plans.sample ? "" : "disabled"}>Generate Sample</button>
       </div>
       <div class="grid two">
-        <div><h3>Training</h3>${state.plans.train ? `<pre>${escapeHtml(state.plans.train.displayCommand)}</pre>` : ""}${renderTrainingMetrics(trainId)}${renderLogs(trainId)}</div>
-        <div><h3>TensorBoard / Sample</h3>${state.plans.tensorboard ? `<pre>${escapeHtml(state.plans.tensorboard.displayCommand)}</pre>` : ""}${state.plans.sample ? `<pre>${escapeHtml(state.plans.sample.displayCommand)}</pre>` : ""}${renderLogs(tbId)}${renderLogs(sampleId)}</div>
+        <div><h3>Setup / Training</h3>${state.plans.engineSetup ? `<pre>${escapeHtml(state.plans.engineSetup.displayCommand)}</pre>` : ""}${renderLogs(setupId)}${state.plans.train ? `<pre>${escapeHtml(state.plans.train.displayCommand)}</pre>` : ""}${renderTrainingMetrics(trainId)}${renderLogs(trainId)}</div>
+        <div><h3>Convert / TensorBoard / Sample</h3>${state.plans.convert ? `<pre>${escapeHtml(state.plans.convert.displayCommand)}</pre>` : ""}${renderLogs(convertId)}${state.plans.tensorboard ? `<pre>${escapeHtml(state.plans.tensorboard.displayCommand)}</pre>` : ""}${state.plans.sample ? `<pre>${escapeHtml(state.plans.sample.displayCommand)}</pre>` : ""}${renderLogs(tbId)}${renderLogs(sampleId)}</div>
       </div>
     </section>`;
 }
@@ -1257,8 +1267,12 @@ function bindEvents(): void {
   document.querySelector("#build-job-files")?.addEventListener("click", () => { syncJobDraft(); void buildJobFiles(); });
   document.querySelector("#clone-job")?.addEventListener("click", () => { syncJobDraft(); void cloneJob(); });
   document.querySelector("#delete-job")?.addEventListener("click", () => void deleteJob());
+  document.querySelector("#plan-engine-setup")?.addEventListener("click", () => { syncJobDraft(); void planEngineSetup(); });
+  document.querySelector("#start-engine-setup")?.addEventListener("click", () => void startPlan("engineSetup"));
   document.querySelector("#plan-train")?.addEventListener("click", () => { syncJobDraft(); void planTrain(); });
   document.querySelector("#start-train")?.addEventListener("click", () => void startPlan("train"));
+  document.querySelector("#plan-convert")?.addEventListener("click", () => { syncJobDraft(); void planComfyConvert(); });
+  document.querySelector("#start-convert")?.addEventListener("click", () => void startPlan("convert"));
   document.querySelector("#plan-tensorboard")?.addEventListener("click", () => void planTensorBoard());
   document.querySelector("#start-tensorboard")?.addEventListener("click", () => void startPlan("tensorboard"));
   document.querySelector("#plan-sample")?.addEventListener("click", () => void planSample());
@@ -1789,11 +1803,29 @@ async function deleteJobByName(name?: string): Promise<void> {
   }
 }
 
+async function planEngineSetup(): Promise<void> {
+  await saveJob();
+  if (!state.jobDraft) return;
+  const result = await bridgeData<{ plan: LaunchPlan; errors?: string[] }>("engine_setup_plan", { name: state.jobDraft.name, allowInvalid: true });
+  state.plans.engineSetup = result.plan;
+  state.jobError = result.errors?.length ? result.errors.join("\n") : undefined;
+  render();
+}
+
 async function planTrain(): Promise<void> {
   await saveJob();
   if (!state.jobDraft) return;
   const result = await bridgeData<{ plan: LaunchPlan; errors?: string[] }>("train_launch_plan", { name: state.jobDraft.name, allowInvalid: true });
   state.plans.train = result.plan;
+  state.jobError = result.errors?.length ? result.errors.join("\n") : undefined;
+  render();
+}
+
+async function planComfyConvert(): Promise<void> {
+  await saveJob();
+  if (!state.jobDraft) return;
+  const result = await bridgeData<{ plan: LaunchPlan; errors?: string[] }>("comfy_convert_plan", { name: state.jobDraft.name, allowInvalid: true });
+  state.plans.convert = result.plan;
   state.jobError = result.errors?.length ? result.errors.join("\n") : undefined;
   render();
 }
@@ -1815,7 +1847,7 @@ async function planSample(): Promise<void> {
   render();
 }
 
-async function startPlan(kind: "train" | "tensorboard" | "sample"): Promise<void> {
+async function startPlan(kind: "engineSetup" | "train" | "convert" | "tensorboard" | "sample"): Promise<void> {
   const plan = state.plans[kind];
   if (!plan) return;
   await startProcess(plan);
