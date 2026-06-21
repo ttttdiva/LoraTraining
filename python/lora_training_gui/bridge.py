@@ -6,6 +6,7 @@ import os
 import platform
 import random
 import re
+import shlex
 import shutil
 import socket
 import struct
@@ -23,6 +24,7 @@ APP_DATA = PROJECT_ROOT / "data"
 SETTINGS_PATH = APP_DATA / "settings.json"
 DEFAULT_TAGGER_MODEL_DIR = Path("D:/AI/models/Hot/image/Tagger")
 DEFAULT_ENGINE_ROOT = KNOWN_TOOL_ROOT / "Anima-Standalone-Trainer"
+DEFAULT_SD_SCRIPTS_ROOT = KNOWN_TOOL_ROOT / "sd-scripts"
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "trash"}
 
@@ -162,6 +164,17 @@ def detect_engines() -> list[dict[str, Any]]:
             ],
         },
         {
+            "id": "sd-scripts",
+            "name": "kohya-ss sd-scripts",
+            "type": "sd_scripts",
+            "root": KNOWN_TOOL_ROOT / "sd-scripts",
+            "required": ["train_network.py", "sdxl_train_network.py", "library", "networks", "requirements.txt"],
+            "notes": [
+                "Official sd-scripts clone for SD1/SD2/SDXL LoRA execution.",
+                "Used directly as a selectable training engine.",
+            ],
+        },
+        {
             "id": "kohya-param-gui",
             "name": "Kohya lora param GUI",
             "type": "sd_scripts_reference",
@@ -238,6 +251,31 @@ def sanitize_name(value: str) -> str:
     return cleaned or f"job_{int(time.time())}"
 
 
+def known_anima_venv() -> Path:
+    return DEFAULT_ENGINE_ROOT / "venv"
+
+
+def default_engines() -> list[dict[str, str]]:
+    sd_scripts_venv = DEFAULT_SD_SCRIPTS_ROOT / "venv"
+    shared_venv = sd_scripts_venv if sd_scripts_venv.exists() else known_anima_venv()
+    return [
+        {
+            "id": "anima-standalone",
+            "name": "Anima Standalone Trainer",
+            "type": "anima_standalone",
+            "root": str(DEFAULT_ENGINE_ROOT),
+            "venv": str(known_anima_venv()),
+        },
+        {
+            "id": "sd-scripts",
+            "name": "kohya-ss sd-scripts",
+            "type": "sd_scripts",
+            "root": str(DEFAULT_SD_SCRIPTS_ROOT),
+            "venv": str(shared_venv),
+        },
+    ]
+
+
 def default_settings() -> dict[str, Any]:
     jobs_root = APP_DATA / "jobs"
     return {
@@ -245,15 +283,7 @@ def default_settings() -> dict[str, Any]:
         "jobsRoot": str(jobs_root),
         "defaultEngineId": "anima-standalone",
         "taggerModelDir": str(DEFAULT_TAGGER_MODEL_DIR),
-        "engines": [
-            {
-                "id": "anima-standalone",
-                "name": "Anima Standalone Trainer",
-                "type": "anima_standalone",
-                "root": str(DEFAULT_ENGINE_ROOT),
-                "venv": str(DEFAULT_ENGINE_ROOT / "venv"),
-            }
-        ],
+        "engines": default_engines(),
         "defaults": {
             "architecture": "anima",
             "captionExtension": ".txt",
@@ -264,6 +294,29 @@ def default_settings() -> dict[str, Any]:
     }
 
 
+def merge_engines(stored_engines: Any) -> list[dict[str, Any]]:
+    defaults = default_engines()
+    if not isinstance(stored_engines, list):
+        return defaults
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    default_by_id = {engine["id"]: engine for engine in defaults}
+    for engine in stored_engines:
+        if not isinstance(engine, dict) or not engine.get("id"):
+            continue
+        engine_id = str(engine["id"])
+        base = default_by_id.get(engine_id, {})
+        item = {**base, **engine}
+        merged.append(item)
+        seen.add(engine_id)
+
+    for engine in defaults:
+        if engine["id"] not in seen:
+            merged.append(engine)
+    return merged
+
+
 def load_settings_dict() -> dict[str, Any]:
     settings = default_settings()
     stored = read_json(SETTINGS_PATH, {})
@@ -271,6 +324,7 @@ def load_settings_dict() -> dict[str, Any]:
         settings.update(stored)
         if isinstance(stored.get("defaults"), dict):
             settings["defaults"].update(stored["defaults"])
+        settings["engines"] = merge_engines(stored.get("engines"))
     return settings
 
 
@@ -279,6 +333,7 @@ def save_settings_dict(settings: dict[str, Any]) -> dict[str, Any]:
     merged.update(settings)
     if isinstance(settings.get("defaults"), dict):
         merged["defaults"].update(settings["defaults"])
+    merged["engines"] = merge_engines(settings.get("engines"))
     write_json(SETTINGS_PATH, merged)
     return merged
 
@@ -333,6 +388,7 @@ def default_job(name: str, settings: dict[str, Any] | None = None) -> dict[str, 
         "engineId": engine.get("id", "anima-standalone"),
         "architecture": defaults.get("architecture", "anima"),
         "modelPaths": {
+            "baseModelPath": "",
             "ditPath": "",
             "qwen3Path": "",
             "vaePath": "",
@@ -355,9 +411,12 @@ def default_job(name: str, settings: dict[str, Any] | None = None) -> dict[str, 
         },
         "training": {
             "outputName": safe_name,
+            "maxTrainSteps": 0,
             "maxTrainEpochs": 15,
             "saveEveryNEpochs": 1,
+            "saveEveryNSteps": 0,
             "learningRate": 0.0001,
+            "unetLr": 0.0001,
             "textEncoderLr": 0.00005,
             "optimizerType": "AdamW8bit",
             "optimizerArgs": ["weight_decay=0.01"],
@@ -372,12 +431,17 @@ def default_job(name: str, settings: dict[str, Any] | None = None) -> dict[str, 
             "cacheLatentsToDisk": True,
             "cacheTextEncoderOutputsToDisk": True,
             "sampleEveryNEpochs": 1,
+            "sampleEveryNSteps": 0,
             "logWith": "tensorboard",
+            "sdpa": True,
+            "xformers": False,
+            "clipSkip": 0,
         },
         "network": {
             "module": "networks.lora_anima",
             "dim": 16,
             "alpha": 16,
+            "args": [],
             "trainUnetOnly": True,
             "resume": "",
             "networkWeights": "",
@@ -387,6 +451,11 @@ def default_job(name: str, settings: dict[str, Any] | None = None) -> dict[str, 
             "discreteFlowShift": 3.0,
             "weightingScheme": "logit_normal",
         },
+        "sdScripts": {
+            "extraArgs": "",
+            "v2": False,
+            "vParameterization": False,
+        },
         "gpu": {
             "ids": defaults.get("gpuIds", "0"),
             "mode": defaults.get("multiGpuMode", "single"),
@@ -394,10 +463,14 @@ def default_job(name: str, settings: dict[str, Any] | None = None) -> dict[str, 
         },
         "sample": {
             "prompts": "",
+            "steps": 30,
+            "sampler": "euler_a",
+            "scale": 7.0,
             "keepLoaded": False,
             "networkMul": 1.0,
             "gpuIds": defaults.get("gpuIds", "0"),
             "multiGpuMode": "parallel_cfg",
+            "extraArgs": "",
         },
         "wandb": {
             "mode": "disabled",
@@ -554,10 +627,10 @@ def write_dataset_toml(job: dict[str, Any], path: Path) -> None:
         "[[datasets]]",
         f"resolution = {toml_scalar(dataset.get('resolution', [1536, 1536]))}",
         f"batch_size = {toml_scalar(dataset.get('batchSize', 1))}",
-        f"caption_extension = {toml_scalar(dataset.get('captionExtension', '.txt'))}",
         "",
         "  [[datasets.subsets]]",
         f"  image_dir = {toml_scalar(dataset.get('imageDir', ''))}",
+        f"  caption_extension = {toml_scalar(dataset.get('captionExtension', '.txt'))}",
         f"  num_repeats = {toml_scalar(dataset.get('numRepeats', 1))}",
         f"  keep_tokens = {toml_scalar(dataset.get('keepTokens', 1))}",
         "  flip_aug = false",
@@ -731,14 +804,262 @@ def process_env_for_job(job: dict[str, Any]) -> dict[str, str]:
     return env
 
 
-def model_path_errors(job: dict[str, Any]) -> list[str]:
+def looks_like_local_path(path_value: str) -> bool:
+    if not path_value:
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", path_value):
+        return True
+    if path_value.startswith(("/", "\\", "~", ".")):
+        return True
+    return Path(path_value).suffix.lower() in {".safetensors", ".ckpt", ".pt", ".bin"}
+
+
+def model_path_errors(job: dict[str, Any], engine_type: str = "anima_standalone") -> list[str]:
     errors: list[str] = []
+    model_paths = job.get("modelPaths", {})
+    if engine_type == "sd_scripts":
+        base_model = str(model_paths.get("baseModelPath") or "").strip()
+        if not base_model:
+            errors.append("model path is empty: baseModelPath")
+        elif looks_like_local_path(base_model) and not Path(base_model).expanduser().exists():
+            errors.append(f"model path not found: baseModelPath={base_model}")
+        vae_path = str(model_paths.get("vaePath") or "").strip()
+        if vae_path and looks_like_local_path(vae_path) and not Path(vae_path).expanduser().exists():
+            errors.append(f"model path not found: vaePath={vae_path}")
+        return errors
+
     for key, path_value in job.get("modelPaths", {}).items():
+        if key == "baseModelPath":
+            continue
         if not str(path_value).strip():
             errors.append(f"model path is empty: {key}")
         elif not Path(str(path_value)).exists():
             errors.append(f"model path not found: {key}={path_value}")
     return errors
+
+
+def parse_arg_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    text = str(value or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if str(item).strip()]
+        except json.JSONDecodeError:
+            pass
+
+    args: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("--") and "=" in line:
+            args.append(line)
+        else:
+            args.extend(shlex.split(line, comments=True, posix=True))
+    return args
+
+
+def add_flag(args: list[str], enabled: Any, flag: str) -> None:
+    if bool(enabled):
+        args.append(flag)
+
+
+def add_option(args: list[str], key: str, value: Any, skip_empty: bool = True) -> None:
+    if skip_empty and (value is None or value == ""):
+        return
+    args.extend([key, str(value)])
+
+
+def sd_scripts_train_script(job: dict[str, Any]) -> str:
+    architecture = str(job.get("architecture") or "sd15").lower()
+    if architecture == "sdxl":
+        return "sdxl_train_network.py"
+    if architecture in {"sd15", "sd1", "sd2"}:
+        return "train_network.py"
+    return "train_network.py"
+
+
+def sd_scripts_gen_script(job: dict[str, Any]) -> str:
+    architecture = str(job.get("architecture") or "sd15").lower()
+    return "sdxl_gen_img.py" if architecture == "sdxl" else "gen_img.py"
+
+
+def caption_randomization_enabled(job: dict[str, Any]) -> bool:
+    dataset = job.get("dataset", {})
+    return bool(dataset.get("shuffleCaption")) or float(dataset.get("captionDropoutRate") or 0) > 0 or float(dataset.get("captionTagDropoutRate") or 0) > 0
+
+
+def sd_scripts_option_errors(job: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    architecture = str(job.get("architecture") or "sd15").lower()
+    training = job.get("training", {})
+    if architecture == "sdxl" and training.get("cacheTextEncoderOutputsToDisk") and caption_randomization_enabled(job):
+        errors.append("SDXL cacheTextEncoderOutputsToDisk cannot be used with shuffle/caption dropout/tag dropout")
+    return errors
+
+
+def build_sd_scripts_args(job: dict[str, Any], files: dict[str, str], script: Path) -> list[str]:
+    training = job.get("training", {})
+    network = job.get("network", {})
+    model = job.get("modelPaths", {})
+    sd_scripts = job.get("sdScripts", {})
+    architecture = str(job.get("architecture") or "sd15").lower()
+    network_module = str(network.get("module") or "networks.lora")
+    if network_module == "networks.lora_anima":
+        network_module = "networks.lora"
+
+    args = [
+        "-m",
+        "accelerate.commands.launch",
+        *build_accelerate_flags(job),
+        str(script),
+        "--pretrained_model_name_or_path",
+        str(model.get("baseModelPath") or ""),
+        "--dataset_config",
+        files["datasetToml"],
+        "--output_dir",
+        files["outputDir"],
+        "--output_name",
+        str(training.get("outputName") or job["name"]),
+        "--save_model_as",
+        "safetensors",
+        "--network_module",
+        network_module,
+        "--network_dim",
+        str(network.get("dim", 16)),
+        "--network_alpha",
+        str(network.get("alpha", 1)),
+        "--learning_rate",
+        str(training.get("learningRate", 0.0001)),
+        "--optimizer_type",
+        str(training.get("optimizerType") or "AdamW8bit"),
+        "--lr_scheduler",
+        str(training.get("lrScheduler") or "constant"),
+        "--lr_warmup_steps",
+        str(training.get("lrWarmupSteps", 0)),
+        "--mixed_precision",
+        str(training.get("mixedPrecision") or "fp16"),
+        "--gradient_accumulation_steps",
+        str(training.get("gradientAccumulationSteps", 1)),
+        "--max_data_loader_n_workers",
+        str(training.get("maxDataLoaderNWorkers", 4)),
+        "--seed",
+        str(training.get("seed", 42)),
+        "--logging_dir",
+        files["logsDir"],
+    ]
+
+    add_option(args, "--text_encoder_lr", training.get("textEncoderLr"))
+    add_option(args, "--unet_lr", training.get("unetLr"))
+    add_option(args, "--save_every_n_epochs", training.get("saveEveryNEpochs"))
+    if int(training.get("saveEveryNSteps") or 0) > 0:
+        add_option(args, "--save_every_n_steps", training.get("saveEveryNSteps"))
+    if int(training.get("maxTrainEpochs") or 0) > 0:
+        add_option(args, "--max_train_epochs", training.get("maxTrainEpochs"))
+    elif int(training.get("maxTrainSteps") or 0) > 0:
+        add_option(args, "--max_train_steps", training.get("maxTrainSteps"))
+    if training.get("logWith") in {"tensorboard", "wandb", "all"}:
+        add_option(args, "--log_with", training.get("logWith"))
+    if model.get("vaePath"):
+        add_option(args, "--vae", model.get("vaePath"))
+    if int(training.get("clipSkip") or 0) > 0 and architecture != "sdxl":
+        add_option(args, "--clip_skip", training.get("clipSkip"))
+    if int(training.get("sampleEveryNEpochs") or 0) > 0 and read_text(Path(files["samplePrompts"])).strip():
+        add_option(args, "--sample_every_n_epochs", training.get("sampleEveryNEpochs"))
+        add_option(args, "--sample_prompts", files["samplePrompts"])
+    if int(training.get("sampleEveryNSteps") or 0) > 0 and read_text(Path(files["samplePrompts"])).strip():
+        add_option(args, "--sample_every_n_steps", training.get("sampleEveryNSteps"))
+        add_option(args, "--sample_prompts", files["samplePrompts"])
+
+    optimizer_args = parse_arg_list(training.get("optimizerArgs"))
+    if optimizer_args:
+        args.extend(["--optimizer_args", *optimizer_args])
+    network_args = parse_arg_list(network.get("args"))
+    if network_args:
+        args.extend(["--network_args", *network_args])
+
+    add_flag(args, training.get("gradientCheckpointing", True), "--gradient_checkpointing")
+    add_flag(args, training.get("sdpa", True), "--sdpa")
+    add_flag(args, training.get("xformers", False), "--xformers")
+    add_flag(args, training.get("cacheLatentsToDisk", True), "--cache_latents_to_disk")
+    add_flag(args, network.get("trainUnetOnly", False), "--network_train_unet_only")
+    add_flag(args, sd_scripts.get("v2", architecture == "sd2"), "--v2")
+    add_flag(args, sd_scripts.get("vParameterization", False), "--v_parameterization")
+
+    if architecture == "sdxl" and not caption_randomization_enabled(job):
+        add_flag(args, training.get("cacheTextEncoderOutputsToDisk", False), "--cache_text_encoder_outputs_to_disk")
+
+    if network.get("resume"):
+        add_option(args, "--resume", network.get("resume"))
+    if network.get("networkWeights"):
+        add_option(args, "--network_weights", network.get("networkWeights"))
+
+    args.extend(parse_arg_list(sd_scripts.get("extraArgs")))
+    return args
+
+
+def build_sd_scripts_sample_args(job: dict[str, Any], files: dict[str, str], script: Path, network_weights: str) -> list[str]:
+    training = job.get("training", {})
+    sample = job.get("sample", {})
+    network = job.get("network", {})
+    model = job.get("modelPaths", {})
+    dataset = job.get("dataset", {})
+    width, height = (dataset.get("resolution") or [512, 512])[:2]
+    network_module = str(network.get("module") or "networks.lora")
+    if network_module == "networks.lora_anima":
+        network_module = "networks.lora"
+    args = [
+        "-m",
+        "accelerate.commands.launch",
+        "--num_cpu_threads_per_process",
+        "1",
+        str(script),
+        "--ckpt",
+        str(model.get("baseModelPath") or ""),
+        "--from_file",
+        files["samplePrompts"],
+        "--outdir",
+        files["samplesDir"],
+        "--W",
+        str(width),
+        "--H",
+        str(height),
+        "--steps",
+        str(sample.get("steps") or 30),
+        "--sampler",
+        str(sample.get("sampler") or "euler_a"),
+        "--scale",
+        str(sample.get("scale") or 7.0),
+        "--seed",
+        str(training.get("seed", 42)),
+    ]
+    precision = str(training.get("mixedPrecision") or "").lower()
+    if precision == "bf16":
+        args.append("--bf16")
+    elif precision == "fp16":
+        args.append("--fp16")
+    if model.get("vaePath"):
+        add_option(args, "--vae", model.get("vaePath"))
+    if training.get("sdpa", True):
+        args.append("--sdpa")
+    if training.get("xformers", False):
+        args.append("--xformers")
+    if int(training.get("clipSkip") or 0) > 0:
+        add_option(args, "--clip_skip", training.get("clipSkip"))
+    if network_weights:
+        args.extend(["--network_module", network_module])
+        args.extend(["--network_weights", network_weights])
+        args.extend(["--network_mul", str(sample.get("networkMul") or 1.0)])
+    network_args = parse_arg_list(network.get("args"))
+    if network_args:
+        args.extend(["--network_args", *network_args])
+    args.extend(parse_arg_list(sample.get("extraArgs")))
+    return args
 
 
 def quote_arg(arg: str) -> str:
@@ -768,24 +1089,37 @@ def train_launch_plan(payload: dict[str, Any]) -> dict[str, Any]:
     settings = load_settings_dict()
     job = load_job_dict(name, settings)
     engine = get_engine(settings, job.get("engineId"))
+    engine_type = str(engine.get("type") or "anima_standalone")
     engine_root = Path(str(engine.get("root") or DEFAULT_ENGINE_ROOT)).resolve()
     files = build_job_files(job, settings)
     python = engine_python(engine)
-    script = engine_root / "anima_train_network.py"
-    args = [
-        "-m",
-        "accelerate.commands.launch",
-        *build_accelerate_flags(job),
-        str(script),
-        f"--config_file={files['mergedConfig']}",
-    ]
-    plan = make_plan(f"train:{job['name']}", "train", engine_root, python, args, process_env_for_job(job), files)
+    if engine_type == "sd_scripts":
+        script = engine_root / sd_scripts_train_script(job)
+        args = build_sd_scripts_args(job, files, script)
+    else:
+        script = engine_root / "anima_train_network.py"
+        args = [
+            "-m",
+            "accelerate.commands.launch",
+            *build_accelerate_flags(job),
+            str(script),
+            f"--config_file={files['mergedConfig']}",
+        ]
+    env = process_env_for_job(job)
+    env["PYTHONPATH"] = str(engine_root)
+    plan = make_plan(f"train:{job['name']}", "train", engine_root, python, args, env, files)
     errors = []
     if not engine_root.exists():
         errors.append(f"engine root not found: {engine_root}")
     if not script.exists():
         errors.append(f"training script not found: {script}")
-    errors.extend(model_path_errors(job))
+    errors.extend(model_path_errors(job, engine_type))
+    if engine_type == "sd_scripts":
+        errors.extend(sd_scripts_option_errors(job))
+    if python == sys.executable and engine_type == "sd_scripts":
+        ok, _, stderr = run_command([python, "-c", "import accelerate"], timeout=10.0)
+        if not ok:
+            errors.append(f"python environment does not have accelerate installed: {python} {stderr}")
     dataset_dir = str(job.get("dataset", {}).get("imageDir", "")).strip()
     if not dataset_dir:
         errors.append("dataset imageDir is empty")
@@ -835,40 +1169,46 @@ def sample_launch_plan(payload: dict[str, Any]) -> dict[str, Any]:
     settings = load_settings_dict()
     job = load_job_dict(name, settings)
     engine = get_engine(settings, job.get("engineId"))
+    engine_type = str(engine.get("type") or "anima_standalone")
     engine_root = Path(str(engine.get("root") or DEFAULT_ENGINE_ROOT)).resolve()
     files = build_job_files(job, settings)
     python = engine_python(engine)
     model = job.get("modelPaths", {})
     sample = job.get("sample", {})
-    script = engine_root / "anima_gen.py"
     network_weights = str(payload.get("networkWeights") or sample.get("networkWeights") or latest_safetensors(Path(files["outputDir"])))
-    args = [
-        "-m",
-        "accelerate.commands.launch",
-        "--num_cpu_threads_per_process",
-        "1",
-        str(script),
-        f"--dit_path={model.get('ditPath', '')}",
-        f"--qwen3_path={model.get('qwen3Path', '')}",
-        f"--vae_path={model.get('vaePath', '')}",
-        f"--sample_prompts={files['samplePrompts']}",
-        f"--output_dir={files['samplesDir']}",
-        f"--output_name={job['name']}_sample",
-        f"--mixed_precision={job.get('training', {}).get('mixedPrecision', 'bf16')}",
-        f"--seed={job.get('training', {}).get('seed', 42)}",
-    ]
-    if network_weights:
-        args += [f"--network_weights={network_weights}", f"--network_mul={sample.get('networkMul', 1.0)}"]
-    if len(split_gpu_ids(sample.get("gpuIds", ""))) > 1:
-        args.append(f"--device_map={sample.get('multiGpuMode', 'parallel_cfg')}")
+    if engine_type == "sd_scripts":
+        script = engine_root / sd_scripts_gen_script(job)
+        args = build_sd_scripts_sample_args(job, files, script, network_weights)
+    else:
+        script = engine_root / "anima_gen.py"
+        args = [
+            "-m",
+            "accelerate.commands.launch",
+            "--num_cpu_threads_per_process",
+            "1",
+            str(script),
+            f"--dit_path={model.get('ditPath', '')}",
+            f"--qwen3_path={model.get('qwen3Path', '')}",
+            f"--vae_path={model.get('vaePath', '')}",
+            f"--sample_prompts={files['samplePrompts']}",
+            f"--output_dir={files['samplesDir']}",
+            f"--output_name={job['name']}_sample",
+            f"--mixed_precision={job.get('training', {}).get('mixedPrecision', 'bf16')}",
+            f"--seed={job.get('training', {}).get('seed', 42)}",
+        ]
+        if network_weights:
+            args += [f"--network_weights={network_weights}", f"--network_mul={sample.get('networkMul', 1.0)}"]
+        if len(split_gpu_ids(sample.get("gpuIds", ""))) > 1:
+            args.append(f"--device_map={sample.get('multiGpuMode', 'parallel_cfg')}")
     env = {"PYTHONIOENCODING": "utf-8"}
+    env["PYTHONPATH"] = str(engine_root)
     if sample.get("gpuIds"):
         env["CUDA_VISIBLE_DEVICES"] = sample["gpuIds"]
     plan = make_plan(f"sample:{job['name']}", "sample", engine_root, python, args, env, files)
     errors = []
     if not script.exists():
         errors.append(f"sample script not found: {script}")
-    errors.extend(model_path_errors(job))
+    errors.extend(model_path_errors(job, engine_type))
     if not read_text(Path(files["samplePrompts"])).strip():
         errors.append("sample prompts are empty")
     if errors and not payload.get("allowInvalid"):

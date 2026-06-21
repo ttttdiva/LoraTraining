@@ -372,6 +372,11 @@ function select(path: string, label: string, values: string[]): string {
   return `<label>${label}<select data-job-field="${path}">${values.map((item) => `<option value="${item}" ${item === value ? "selected" : ""}>${item}</option>`).join("")}</select></label>`;
 }
 
+function textarea(path: string, label: string, placeholder = ""): string {
+  const value = getPath(state.jobDraft, path, "");
+  return `<label class="textarea-label">${label}<textarea data-job-field="${path}" placeholder="${escapeHtml(placeholder)}">${escapeHtml(value)}</textarea></label>`;
+}
+
 function renderLogs(processId: string): string {
   const process = state.processes[processId];
   if (!process) return `<pre class="log-box">No process started.</pre>`;
@@ -391,6 +396,8 @@ function renderJobEditor(): string {
         ${input("displayName", "Display name")}
         <label>Job id<input type="text" value="${escapeHtml(job.name)}" readonly></label>
         ${select("engineId", "Engine", (state.settings?.engines || []).map((engine) => engine.id))}
+        ${select("architecture", "Architecture", ["anima", "sd15", "sd2", "sdxl"])}
+        ${input("modelPaths.baseModelPath", "sd-scripts base model path")}
         ${input("modelPaths.ditPath", "DiT model path")}
         ${input("modelPaths.qwen3Path", "Qwen3 text encoder path")}
         ${input("modelPaths.vaePath", "VAE path")}
@@ -401,22 +408,46 @@ function renderJobEditor(): string {
         ${input("dataset.batchSize", "Batch size", "number")}
         ${input("dataset.numRepeats", "Repeats", "number")}
         ${input("training.outputName", "Output name")}
+        ${input("training.maxTrainSteps", "Max steps", "number")}
         ${input("training.maxTrainEpochs", "Epochs", "number")}
+        ${input("training.saveEveryNEpochs", "Save every epochs", "number")}
+        ${input("training.saveEveryNSteps", "Save every steps", "number")}
         ${input("training.learningRate", "Learning rate", "number")}
+        ${input("training.unetLr", "UNet LR", "number")}
         ${input("training.textEncoderLr", "Text encoder LR", "number")}
         ${input("training.optimizerType", "Optimizer")}
         ${input("training.lrScheduler", "LR scheduler")}
+        ${input("training.lrWarmupSteps", "LR warmup steps", "number")}
         ${select("training.mixedPrecision", "Mixed precision", ["bf16", "fp16", "no"])}
+        ${input("training.clipSkip", "Clip skip", "number")}
+        ${input("network.module", "Network module")}
         ${input("network.dim", "Network dim", "number")}
         ${input("network.alpha", "Network alpha", "number")}
+        ${input("sample.steps", "Sample steps", "number")}
+        ${input("sample.sampler", "Sample sampler")}
+        ${input("sample.scale", "Sample CFG scale", "number")}
         ${input("gpu.ids", "GPU IDs")}
         ${select("gpu.mode", "Multi GPU mode", ["single", "ddp", "fsdp", "fsdp2", "deepspeed"])}
         ${select("wandb.mode", "WanDB", ["disabled", "offline", "online"])}
         ${input("wandb.project", "WanDB project")}
         ${checkbox("training.gradientCheckpointing", "Gradient checkpointing")}
+        ${checkbox("training.cacheLatentsToDisk", "Cache latents to disk")}
+        ${checkbox("training.cacheTextEncoderOutputsToDisk", "Cache text encoder outputs to disk")}
+        ${checkbox("training.sdpa", "SDPA")}
+        ${checkbox("training.xformers", "xFormers")}
         ${checkbox("network.trainUnetOnly", "Train UNet only")}
+        ${checkbox("sdScripts.v2", "SD v2")}
+        ${checkbox("sdScripts.vParameterization", "v-parameterization")}
+      </div>
+      <div class="grid two">
+        ${textarea("training.optimizerArgs", "Optimizer args", "weight_decay=0.01")}
+        ${textarea("network.args", "Network args", "conv_dim=4\\nconv_alpha=1")}
       </div>
       <label class="textarea-label">Sample prompts<textarea id="job-sample-prompts">${escapeHtml(getPath(job, "sample.prompts", ""))}</textarea></label>
+      <div class="grid two">
+        ${textarea("sdScripts.extraArgs", "Extra sd-scripts train args", "--min_snr_gamma=5\\n--noise_offset=0.05")}
+        ${textarea("sample.extraArgs", "Extra sd-scripts sample args", "--images_per_prompt 2")}
+      </div>
       <div class="action-row">
         <button class="primary-button" id="save-job" type="button">Save Job</button>
         <button class="secondary-button" id="build-job-files" type="button">Write TOML</button>
@@ -532,11 +563,11 @@ function syncBulkControls(): void {
 
 function syncJobDraft(): void {
   if (!state.jobDraft) return;
-  document.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-job-field]").forEach((input) => {
+  document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("[data-job-field]").forEach((input) => {
     const field = input.dataset.jobField;
     if (!field) return;
     const current = getPath(state.jobDraft, field, "");
-    let value: unknown = input.type === "checkbox" ? (input as HTMLInputElement).checked : input.value;
+    let value: unknown = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
     if (typeof current === "number") value = Number(input.value);
     setPath(state.jobDraft, field, value);
   });
@@ -715,8 +746,9 @@ async function deleteJob(): Promise<void> {
 async function planTrain(): Promise<void> {
   await saveJob();
   if (!state.jobDraft) return;
-  const result = await bridgeData<{ plan: LaunchPlan }>("train_launch_plan", { name: state.jobDraft.name, allowInvalid: true });
+  const result = await bridgeData<{ plan: LaunchPlan; errors?: string[] }>("train_launch_plan", { name: state.jobDraft.name, allowInvalid: true });
   state.plans.train = result.plan;
+  state.jobError = result.errors?.length ? result.errors.join("\n") : undefined;
   render();
 }
 
@@ -731,8 +763,9 @@ async function planTensorBoard(): Promise<void> {
 async function planSample(): Promise<void> {
   await saveJob();
   if (!state.jobDraft) return;
-  const result = await bridgeData<{ plan: LaunchPlan }>("sample_launch_plan", { name: state.jobDraft.name, allowInvalid: true });
+  const result = await bridgeData<{ plan: LaunchPlan; errors?: string[] }>("sample_launch_plan", { name: state.jobDraft.name, allowInvalid: true });
   state.plans.sample = result.plan;
+  state.jobError = result.errors?.length ? result.errors.join("\n") : undefined;
   render();
 }
 
