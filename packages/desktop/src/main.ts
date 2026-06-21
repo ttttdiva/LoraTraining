@@ -37,8 +37,10 @@ type HealthData = {
 
 type Settings = {
   jobsRoot: string;
+  datasetsRoot: string;
   defaultEngineId: string;
   taggerModelDir: string;
+  datasets?: DatasetProfile[];
   engines: Array<{ id: string; name: string; type: string; root: string; venv: string }>;
   defaults: Record<string, unknown>;
   agent?: {
@@ -56,6 +58,7 @@ type Settings = {
   ui?: {
     view?: string;
     datasetRoot?: string;
+    activeDatasetId?: string;
     datasetCaptionExtension?: string;
     datasetMinPixels?: number;
     datasetSelectedImagePath?: string;
@@ -74,6 +77,16 @@ type Settings = {
     agentMultiGpuMode?: string;
     selectedJobName?: string;
   };
+};
+
+type DatasetProfile = {
+  id: string;
+  name: string;
+  root: string;
+  captionExtension: string;
+  minPixels: number;
+  lastSelectedImagePath?: string;
+  updatedAt?: string;
 };
 
 type DatasetItem = {
@@ -142,6 +155,8 @@ type TrainingMetric = { index: number; step?: number; epoch?: number; loss: numb
 type ViewId = "dashboard" | "agent" | "dataset" | "jobs" | "tagger";
 
 type DatasetState = {
+  profiles: DatasetProfile[];
+  activeProfileId?: string;
   root: string;
   captionExtension: string;
   minPixels: number;
@@ -224,6 +239,8 @@ const state: {
   view: "dashboard",
   healthLoading: true,
   dataset: {
+    profiles: [],
+    activeProfileId: undefined,
     root: "",
     captionExtension: ".txt",
     minPixels: 0,
@@ -339,10 +356,95 @@ function validTaggerMode(value: unknown): value is "merge" | "overwrite" {
   return ["merge", "overwrite"].includes(String(value));
 }
 
+function slug(value: string): string {
+  return value.trim().replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^[._]+|[._]+$/g, "") || `dataset_${Date.now()}`;
+}
+
+function folderName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || "dataset";
+}
+
+function normalizeDatasetProfile(raw: Partial<DatasetProfile>, fallbackRoot = ""): DatasetProfile | undefined {
+  const root = String(raw.root || fallbackRoot || "").trim();
+  if (!root) return undefined;
+  const name = String(raw.name || folderName(root)).trim() || folderName(root);
+  return {
+    id: String(raw.id || slug(name || root)),
+    name,
+    root,
+    captionExtension: String(raw.captionExtension || ".txt"),
+    minPixels: Math.max(0, Number(raw.minPixels || 0)),
+    lastSelectedImagePath: String(raw.lastSelectedImagePath || ""),
+    updatedAt: String(raw.updatedAt || new Date().toISOString()),
+  };
+}
+
+function loadDatasetProfiles(settings: Settings): DatasetProfile[] {
+  const profiles = Array.isArray(settings.datasets)
+    ? settings.datasets.map((item) => normalizeDatasetProfile(item)).filter((item): item is DatasetProfile => Boolean(item))
+    : [];
+  const legacy = normalizeDatasetProfile({
+    name: settings.ui?.datasetRoot ? folderName(settings.ui.datasetRoot) : "",
+    root: settings.ui?.datasetRoot || "",
+    captionExtension: settings.ui?.datasetCaptionExtension || ".txt",
+    minPixels: settings.ui?.datasetMinPixels || 0,
+    lastSelectedImagePath: settings.ui?.datasetSelectedImagePath || "",
+  });
+  if (legacy && !profiles.some((profile) => profile.root.toLowerCase() === legacy.root.toLowerCase())) {
+    profiles.unshift(legacy);
+  }
+  return profiles;
+}
+
+function activeDatasetProfile(): DatasetProfile | undefined {
+  return state.dataset.profiles.find((profile) => profile.id === state.dataset.activeProfileId);
+}
+
+function setDatasetFromProfile(profile: DatasetProfile): void {
+  state.dataset.activeProfileId = profile.id;
+  state.dataset.root = profile.root;
+  state.dataset.captionExtension = profile.captionExtension || ".txt";
+  state.dataset.minPixels = Math.max(0, Number(profile.minPixels || 0));
+  state.dataset.selectedImagePath = profile.lastSelectedImagePath || undefined;
+  state.dataset.draftCaption = "";
+  state.dataset.scan = undefined;
+  state.tagger.datasetRoot = profile.root;
+}
+
+function upsertDatasetProfile(profile: DatasetProfile): DatasetProfile {
+  const normalized = normalizeDatasetProfile({ ...profile, updatedAt: new Date().toISOString() });
+  if (!normalized) throw new Error("dataset root is required");
+  const index = state.dataset.profiles.findIndex((item) => item.id === normalized.id || item.root.toLowerCase() === normalized.root.toLowerCase());
+  if (index >= 0) {
+    state.dataset.profiles[index] = { ...state.dataset.profiles[index], ...normalized };
+  } else {
+    state.dataset.profiles.unshift(normalized);
+  }
+  return normalized;
+}
+
+function updateActiveDatasetProfile(): void {
+  if (!state.dataset.root) return;
+  const existing = activeDatasetProfile();
+  const profile = upsertDatasetProfile({
+    id: existing?.id || slug(folderName(state.dataset.root)),
+    name: existing?.name || folderName(state.dataset.root),
+    root: state.dataset.root,
+    captionExtension: state.dataset.captionExtension,
+    minPixels: state.dataset.minPixels,
+    lastSelectedImagePath: state.dataset.selectedImagePath || "",
+  });
+  state.dataset.activeProfileId = profile.id;
+}
+
 function applyPersistedUi(settings: Settings): void {
   const ui = settings.ui || {};
+  state.dataset.profiles = loadDatasetProfiles(settings);
   if (validView(ui.view)) state.view = ui.view;
-  if (typeof ui.datasetRoot === "string") state.dataset.root = ui.datasetRoot;
+  if (typeof ui.activeDatasetId === "string") state.dataset.activeProfileId = ui.activeDatasetId;
+  const activeProfile = activeDatasetProfile() || state.dataset.profiles[0];
+  if (activeProfile) setDatasetFromProfile(activeProfile);
+  else if (typeof ui.datasetRoot === "string") state.dataset.root = ui.datasetRoot;
   if (typeof ui.datasetCaptionExtension === "string" && ui.datasetCaptionExtension.trim()) state.dataset.captionExtension = ui.datasetCaptionExtension;
   if (Number.isFinite(Number(ui.datasetMinPixels))) state.dataset.minPixels = Math.max(0, Number(ui.datasetMinPixels));
   if (typeof ui.datasetSelectedImagePath === "string") state.dataset.selectedImagePath = ui.datasetSelectedImagePath;
@@ -366,6 +468,7 @@ function currentUiSettings(): NonNullable<Settings["ui"]> {
   return {
     view: state.view,
     datasetRoot: state.dataset.root,
+    activeDatasetId: state.dataset.activeProfileId || "",
     datasetCaptionExtension: state.dataset.captionExtension,
     datasetMinPixels: state.dataset.minPixels,
     datasetSelectedImagePath: state.dataset.selectedImagePath || "",
@@ -397,6 +500,7 @@ async function persistUiState(): Promise<void> {
   persistUiTimer = undefined;
   const next: Settings = {
     ...state.settings,
+    datasets: state.dataset.profiles,
     agent: {
       ...state.settings.agent,
       provider: state.agent.provider,
@@ -491,6 +595,7 @@ function renderDashboard(): string {
         <dl class="details">
           <div><dt>Python</dt><dd class="mono">${escapeHtml(health.system.pythonVersion)}</dd></div>
           <div><dt>Project</dt><dd class="mono">${escapeHtml(health.app.projectRoot)}</dd></div>
+          <div><dt>Datasets</dt><dd class="mono">${escapeHtml(state.settings?.datasetsRoot || "-")}</dd></div>
           <div><dt>Jobs</dt><dd class="mono">${escapeHtml(state.settings?.jobsRoot || "-")}</dd></div>
           <div><dt>Tagger</dt><dd class="mono">${escapeHtml(state.settings?.taggerModelDir || "-")}</dd></div>
         </dl>
@@ -524,12 +629,23 @@ function renderDatasetStudio(): string {
   const d = state.dataset;
   const scan = d.scan;
   const selected = selectedDatasetItem();
+  const profile = activeDatasetProfile();
+  const profileOptions = d.profiles.length
+    ? d.profiles.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === d.activeProfileId ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")
+    : `<option value="">No registered datasets</option>`;
   return `
     <section class="hero-band">
       <div><p class="eyebrow">Dataset Studio</p><h1>Caption and Tag Editor</h1><p class="lead">Scan folders, edit captions, and apply batch tag operations.</p></div>
-      <div class="action-row"><button class="secondary-button" id="choose-dataset-root" type="button">Choose Folder</button><button class="primary-button" id="scan-dataset" type="button" ${d.root ? "" : "disabled"}>Scan</button></div>
+      <div class="action-row"><button class="secondary-button" id="register-dataset" type="button">Add Dataset</button><button class="primary-button" id="scan-dataset" type="button" ${d.root ? "" : "disabled"}>Scan</button></div>
     </section>
     <section class="panel">
+      <div class="section-title"><div><h2>Dataset Library</h2><p class="muted mono">${escapeHtml(state.settings?.datasetsRoot || "")}</p></div><span class="pill">${d.profiles.length}</span></div>
+      <div class="dataset-library-controls">
+        <label>Dataset<select id="dataset-profile">${profileOptions}</select></label>
+        <button class="secondary-button" id="rename-dataset-profile" type="button" ${profile ? "" : "disabled"}>Rename</button>
+        <button class="secondary-button" id="save-dataset-profile" type="button" ${d.root ? "" : "disabled"}>Save Current</button>
+        <button class="danger-button" id="forget-dataset-profile" type="button" ${profile ? "" : "disabled"}>Forget</button>
+      </div>
       <div class="form-grid dataset-controls">
         <label>Dataset root<input id="dataset-root" value="${escapeHtml(d.root)}" placeholder="D:\\datasets\\my_lora"></label>
         <label>Caption extension<input id="caption-extension" value="${escapeHtml(d.captionExtension)}"></label>
@@ -1044,7 +1160,11 @@ function bindEvents(): void {
   document.querySelector("#start-agent-preprocess")?.addEventListener("click", () => void startAgentPlan("preprocess"));
   document.querySelector("#start-agent-tagger")?.addEventListener("click", () => void startAgentPlan("tagger"));
   document.querySelector("#start-agent-train")?.addEventListener("click", () => void startAgentPlan("train"));
-  document.querySelector("#choose-dataset-root")?.addEventListener("click", () => void chooseDatasetRoot());
+  document.querySelector("#register-dataset")?.addEventListener("click", () => void registerDataset());
+  document.querySelector("#dataset-profile")?.addEventListener("change", () => { void selectDatasetProfile(textValue("dataset-profile")); });
+  document.querySelector("#rename-dataset-profile")?.addEventListener("click", () => void renameDatasetProfile());
+  document.querySelector("#save-dataset-profile")?.addEventListener("click", () => { syncDatasetControls(); void saveCurrentDatasetProfile(); });
+  document.querySelector("#forget-dataset-profile")?.addEventListener("click", () => void forgetDatasetProfile());
   document.querySelector("#scan-dataset")?.addEventListener("click", () => { syncDatasetControls(); queuePersistUiState(); void scanDataset(); });
   document.querySelector("#reload-dataset")?.addEventListener("click", () => void scanDataset());
   document.querySelectorAll<HTMLButtonElement>(".dataset-row").forEach((button) => button.addEventListener("click", () => {
@@ -1052,6 +1172,7 @@ function bindEvents(): void {
     if (!item) return;
     state.dataset.selectedImagePath = item.imagePath;
     state.dataset.draftCaption = item.captionText;
+    updateActiveDatasetProfile();
     queuePersistUiState();
     render();
   }));
@@ -1231,17 +1352,90 @@ async function startAgentPlan(kind: "preprocess" | "tagger" | "train"): Promise<
   await startProcess(plan);
 }
 
-async function chooseDatasetRoot(): Promise<void> {
+async function registerDataset(): Promise<void> {
   const result = await open({ directory: true, multiple: false, title: "Select dataset folder" });
   if (typeof result !== "string") return;
+  const name = window.prompt("Dataset name", folderName(result))?.trim();
+  if (!name) return;
   state.dataset.root = result;
+  state.dataset.captionExtension = state.dataset.captionExtension || ".txt";
   state.tagger.datasetRoot = result;
+  const profile = upsertDatasetProfile({
+    id: slug(name),
+    name,
+    root: result,
+    captionExtension: state.dataset.captionExtension,
+    minPixels: state.dataset.minPixels,
+    lastSelectedImagePath: "",
+  });
+  setDatasetFromProfile(profile);
   queuePersistUiState();
   await scanDataset();
 }
 
+async function selectDatasetProfile(id: string): Promise<void> {
+  const profile = state.dataset.profiles.find((item) => item.id === id);
+  if (!profile) return;
+  setDatasetFromProfile(profile);
+  queuePersistUiState();
+  await scanDataset();
+}
+
+async function saveCurrentDatasetProfile(): Promise<void> {
+  if (!state.dataset.root) return;
+  const existing = activeDatasetProfile();
+  const name = existing?.name || window.prompt("Dataset name", folderName(state.dataset.root))?.trim();
+  if (!name) return;
+  const profile = upsertDatasetProfile({
+    id: existing?.id || slug(name),
+    name,
+    root: state.dataset.root,
+    captionExtension: state.dataset.captionExtension,
+    minPixels: state.dataset.minPixels,
+    lastSelectedImagePath: state.dataset.selectedImagePath || "",
+  });
+  state.dataset.activeProfileId = profile.id;
+  state.tagger.datasetRoot = profile.root;
+  state.dataset.message = `Saved dataset "${profile.name}".`;
+  queuePersistUiState();
+  render();
+}
+
+async function renameDatasetProfile(): Promise<void> {
+  const profile = activeDatasetProfile();
+  if (!profile) return;
+  const name = window.prompt("Dataset name", profile.name)?.trim();
+  if (!name || name === profile.name) return;
+  profile.name = name;
+  profile.updatedAt = new Date().toISOString();
+  state.dataset.message = `Renamed dataset to "${name}".`;
+  queuePersistUiState();
+  render();
+}
+
+async function forgetDatasetProfile(): Promise<void> {
+  const profile = activeDatasetProfile();
+  if (!profile) return;
+  if (!window.confirm(`Forget dataset "${profile.name}"? Files will not be deleted.`)) return;
+  state.dataset.profiles = state.dataset.profiles.filter((item) => item.id !== profile.id);
+  const next = state.dataset.profiles[0];
+  if (next) {
+    setDatasetFromProfile(next);
+    await scanDataset();
+  } else {
+    state.dataset.activeProfileId = undefined;
+    state.dataset.root = "";
+    state.dataset.scan = undefined;
+    state.dataset.selectedImagePath = undefined;
+    state.dataset.draftCaption = "";
+    render();
+  }
+  queuePersistUiState();
+}
+
 async function scanDataset(): Promise<void> {
   if (!state.dataset.root) return;
+  updateActiveDatasetProfile();
   state.dataset.loading = true;
   state.dataset.error = undefined;
   render();
@@ -1253,6 +1447,7 @@ async function scanDataset(): Promise<void> {
     state.dataset.selectedImagePath = selected?.imagePath;
     state.dataset.draftCaption = selected?.captionText || "";
     state.dataset.message = `Scanned ${scan.imageCount} images.`;
+    updateActiveDatasetProfile();
     queuePersistUiState();
   } catch (error) {
     state.dataset.error = error instanceof Error ? error.message : String(error);

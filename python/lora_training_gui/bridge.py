@@ -16,6 +16,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -381,11 +382,14 @@ def default_engines() -> list[dict[str, str]]:
 
 def default_settings() -> dict[str, Any]:
     jobs_root = APP_DATA / "jobs"
+    datasets_root = APP_DATA / "datasets"
     return {
         "schemaVersion": 1,
         "jobsRoot": str(jobs_root),
+        "datasetsRoot": str(datasets_root),
         "defaultEngineId": "anima-standalone",
         "taggerModelDir": str(DEFAULT_TAGGER_MODEL_DIR),
+        "datasets": [],
         "engines": default_engines(),
         "defaults": {
             "architecture": "anima",
@@ -409,6 +413,7 @@ def default_settings() -> dict[str, Any]:
         "ui": {
             "view": "dashboard",
             "datasetRoot": "",
+            "activeDatasetId": "",
             "datasetCaptionExtension": ".txt",
             "datasetMinPixels": 0,
             "datasetSelectedImagePath": "",
@@ -464,6 +469,8 @@ def load_settings_dict() -> dict[str, Any]:
             settings["agent"].update(stored["agent"])
         if isinstance(stored.get("ui"), dict):
             settings["ui"].update(stored["ui"])
+        if not isinstance(settings.get("datasets"), list):
+            settings["datasets"] = []
         settings["engines"] = merge_engines(stored.get("engines"))
     return settings
 
@@ -477,6 +484,7 @@ def save_settings_dict(settings: dict[str, Any]) -> dict[str, Any]:
         merged["agent"].update(settings["agent"])
     if isinstance(settings.get("ui"), dict):
         merged["ui"].update(settings["ui"])
+    merged["datasets"] = settings.get("datasets") if isinstance(settings.get("datasets"), list) else []
     merged["engines"] = merge_engines(settings.get("engines"))
     write_json(SETTINGS_PATH, merged)
     return merged
@@ -485,6 +493,7 @@ def save_settings_dict(settings: dict[str, Any]) -> dict[str, Any]:
 def settings_get(_: dict[str, Any]) -> dict[str, Any]:
     settings = load_settings_dict()
     Path(settings["jobsRoot"]).mkdir(parents=True, exist_ok=True)
+    Path(settings["datasetsRoot"]).mkdir(parents=True, exist_ok=True)
     Path(settings["taggerModelDir"]).mkdir(parents=True, exist_ok=True)
     return success("settings_get", settings)
 
@@ -492,6 +501,7 @@ def settings_get(_: dict[str, Any]) -> dict[str, Any]:
 def settings_save(payload: dict[str, Any]) -> dict[str, Any]:
     settings = save_settings_dict(payload)
     Path(settings["jobsRoot"]).mkdir(parents=True, exist_ok=True)
+    Path(settings["datasetsRoot"]).mkdir(parents=True, exist_ok=True)
     Path(settings["taggerModelDir"]).mkdir(parents=True, exist_ok=True)
     return success("settings_save", settings)
 
@@ -510,6 +520,46 @@ def jobs_root(settings: dict[str, Any] | None = None) -> Path:
     root = Path(str(current.get("jobsRoot") or APP_DATA / "jobs")).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def datasets_root(settings: dict[str, Any] | None = None) -> Path:
+    current = settings or load_settings_dict()
+    root = Path(str(current.get("datasetsRoot") or APP_DATA / "datasets")).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def dataset_dir(dataset_name: str, settings: dict[str, Any] | None = None) -> Path:
+    return datasets_root(settings) / sanitize_name(dataset_name)
+
+
+def upsert_dataset_setting(settings: dict[str, Any], dataset_id: str, name: str, root: str, caption_extension: str = ".txt") -> dict[str, Any]:
+    datasets = settings.get("datasets") if isinstance(settings.get("datasets"), list) else []
+    normalized_id = sanitize_name(dataset_id or name or Path(root).name)
+    profile = {
+        "id": normalized_id,
+        "name": name or Path(root).name or normalized_id,
+        "root": root,
+        "captionExtension": caption_extension,
+        "minPixels": 0,
+        "lastSelectedImagePath": "",
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    root_lower = str(root).lower()
+    settings["datasets"] = [
+        item
+        for item in datasets
+        if isinstance(item, dict)
+        and str(item.get("id", "")) != normalized_id
+        and str(item.get("root", "")).lower() != root_lower
+    ] + [profile]
+    ui = settings.setdefault("ui", {})
+    if isinstance(ui, dict):
+        ui["activeDatasetId"] = normalized_id
+        ui["datasetRoot"] = root
+        ui["datasetCaptionExtension"] = caption_extension
+        ui["taggerDatasetRoot"] = root
+    return settings
 
 
 def job_dir(job_name: str, settings: dict[str, Any] | None = None) -> Path:
@@ -1684,7 +1734,8 @@ def heuristic_autopilot_job(job_name: str, payload: dict[str, Any], summary: dic
     repeats, epochs = recommended_repeats_epochs(int(summary.get("imageCount") or 0))
     gpu_ids, gpu_mode, min_vram = detect_gpu_defaults(payload)
     batch_size = 2 if min_vram >= 24000 and resolution[0] <= 1024 else 1
-    stage_root = job_dir(job_name, settings) / "agent_dataset"
+    dataset_name = sanitize_name(str(payload.get("datasetName") or payload.get("displayName") or job_name))
+    stage_root = dataset_dir(dataset_name, settings)
     output_format = str(payload.get("outputFormat") or settings.get("agent", {}).get("outputFormat") or "png")
     image_max_side = int(payload.get("imageMaxSide") or settings.get("agent", {}).get("imageMaxSide") or resolution[0])
     caption_extension = str(payload.get("captionExtension") or ".txt")
@@ -1762,6 +1813,7 @@ def heuristic_autopilot_job(job_name: str, payload: dict[str, Any], summary: dic
         "summary": "Heuristic Autopilot recommendation generated from folder statistics.",
         "preprocess": {
             "sourceRoot": str(summary.get("sourceRoot") or ""),
+            "datasetName": dataset_name,
             "datasetRoot": str(stage_root),
             "recursive": True,
             "flatten": True,
@@ -1858,7 +1910,7 @@ def agent_autopilot_preprocess_plan(payload: dict[str, Any]) -> dict[str, Any]:
         return failure("agent_autopilot_preprocess_plan", [f"sourceRoot does not exist: {source_root}"])
     settings = load_settings_dict()
     root = job_dir(name, settings)
-    dataset_root = Path(str(payload.get("datasetRoot") or root / "agent_dataset")).expanduser().resolve()
+    dataset_root = Path(str(payload.get("datasetRoot") or dataset_dir(str(payload.get("datasetName") or name), settings))).expanduser().resolve()
     agent_root = root / "agent"
     manifest_path = agent_root / "preprocess_manifest.json"
     caption_extension = str(payload.get("captionExtension") or ".txt")
@@ -1945,8 +1997,19 @@ def agent_autopilot_plan(payload: dict[str, Any]) -> dict[str, Any]:
             recommendation["jobPatch"] = allowed_job_patch(job)
 
     saved_job = save_job_dict(job, settings)
-    files = write_autopilot_files(saved_job["name"], settings, prompt, recommendation, external)
     preprocess = recommendation.get("preprocess") if isinstance(recommendation.get("preprocess"), dict) else {}
+    dataset_root_value = str(saved_job.get("dataset", {}).get("imageDir") or "")
+    if dataset_root_value:
+        dataset_name = str(preprocess.get("datasetName") or saved_job.get("displayName") or saved_job["name"])
+        settings = upsert_dataset_setting(
+            settings,
+            str(preprocess.get("datasetName") or saved_job["name"]),
+            dataset_name,
+            dataset_root_value,
+            str(saved_job.get("dataset", {}).get("captionExtension", ".txt")),
+        )
+        save_settings_dict(settings)
+    files = write_autopilot_files(saved_job["name"], settings, prompt, recommendation, external)
     preprocess_result = agent_autopilot_preprocess_plan(
         {
             "sourceRoot": str(source_root),

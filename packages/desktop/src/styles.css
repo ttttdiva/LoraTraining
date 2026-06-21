@@ -516,6 +516,14 @@ textarea {
   grid-template-columns: minmax(280px, 1fr) minmax(130px, 180px) minmax(160px, 220px);
 }
 
+.dataset-library-controls {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 14px;
+}
+
 .summary-grid {
   margin-bottom: 18px;
 }
@@ -842,6 +850,7 @@ textarea {
   }
 
   .dataset-controls,
+  .dataset-library-controls,
   .dataset-workspace,
   .preview-block,
   .jobs-layout {
