@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "dev:desktop": "pnpm --filter desktop tauri:dev",
-    "build:desktop": "pnpm --filter desktop tauri:build",
+    "build:desktop": "pnpm --filter desktop tauri:build && pnpm copy:exe",
+    "copy:exe": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Copy-Item -LiteralPath 'packages/desktop/src-tauri/target/release/LoraTraining.exe' -Destination 'LoraTraining.exe' -Force\"",
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
