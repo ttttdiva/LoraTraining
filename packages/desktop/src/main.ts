@@ -504,15 +504,11 @@ function renderTagger(): string {
     </section>
     <section class="panel">
       <div class="section-title"><h2>Model</h2>${statusPill(Boolean(status.modelExists && status.tagsExists), "Ready", "Missing")}</div>
-      <div class="form-grid">
+      <div class="path-picker">
         <label>Model dir<input id="tagger-model-dir" value="${escapeHtml(state.tagger.modelDir || status.modelDir || state.settings?.taggerModelDir || "")}"></label>
+        <button class="secondary-button compact-button" id="choose-tagger-model-dir" type="button">Browse</button>
       </div>
-      <div class="action-row">
-        <button class="secondary-button" id="choose-tagger-model-dir" type="button">Choose Model Dir</button>
-        <button class="primary-button" id="save-tagger-model-dir" type="button">Save Model Dir</button>
-      </div>
-      <dl class="details">
-        <div><dt>Model dir</dt><dd class="mono">${escapeHtml(status.modelDir || state.settings?.taggerModelDir || "")}</dd></div>
+      <dl class="details model-status-list">
         <div><dt>model.onnx</dt><dd>${statusPill(Boolean(status.modelExists), "Found", "Missing")}</dd></div>
         <div><dt>selected_tags.csv</dt><dd>${statusPill(Boolean(status.tagsExists), "Found", "Missing")}</dd></div>
       </dl>
@@ -627,9 +623,9 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-stop-process]").forEach((button) => button.addEventListener("click", () => void stopProcess(button.dataset.stopProcess || "")));
   document.querySelector("#refresh-tagger")?.addEventListener("click", () => { syncTaggerControls(); void loadTaggerStatus(); });
   document.querySelector("#install-tagger-deps")?.addEventListener("click", () => void startTaggerPlan("tagger_install_deps_plan"));
-  document.querySelector("#download-tagger-model")?.addEventListener("click", () => { syncTaggerControls(); void startTaggerPlan("tagger_download_plan"); });
+  document.querySelector("#download-tagger-model")?.addEventListener("click", () => void downloadTaggerModel());
   document.querySelector("#choose-tagger-model-dir")?.addEventListener("click", () => void chooseTaggerModelDir());
-  document.querySelector("#save-tagger-model-dir")?.addEventListener("click", () => { syncTaggerControls(); void saveTaggerModelDir(); });
+  document.querySelector("#tagger-model-dir")?.addEventListener("change", () => { syncTaggerControls(); void persistTaggerModelDir().then(loadTaggerStatus); });
   document.querySelector("#choose-tagger-root")?.addEventListener("click", () => void chooseTaggerRoot());
   document.querySelector("#run-tagger")?.addEventListener("click", () => { syncTaggerControls(); void runTagger(); });
 }
@@ -811,17 +807,23 @@ async function chooseTaggerModelDir(): Promise<void> {
   const result = await open({ directory: true, multiple: false, title: "Select WD14 model folder" });
   if (typeof result !== "string") return;
   state.tagger.modelDir = result;
-  await saveTaggerModelDir();
+  await persistTaggerModelDir();
+  await loadTaggerStatus();
 }
 
-async function saveTaggerModelDir(): Promise<void> {
+async function persistTaggerModelDir(): Promise<void> {
   if (!state.settings) return;
   const modelDir = state.tagger.modelDir.trim();
   if (!modelDir) return;
+  if (modelDir === state.settings.taggerModelDir) return;
   state.settings = await bridgeData<Settings>("settings_save", { ...state.settings, taggerModelDir: modelDir });
   state.tagger.modelDir = state.settings.taggerModelDir;
-  state.tagger.message = "Saved model directory.";
-  await loadTaggerStatus();
+}
+
+async function downloadTaggerModel(): Promise<void> {
+  syncTaggerControls();
+  await persistTaggerModelDir();
+  await startTaggerPlan("tagger_download_plan");
 }
 
 async function chooseTaggerRoot(): Promise<void> {
@@ -833,6 +835,7 @@ async function chooseTaggerRoot(): Promise<void> {
 
 async function runTagger(): Promise<void> {
   syncTaggerControls();
+  await persistTaggerModelDir();
   const result = await bridgeData<{ plan: LaunchPlan }>("tagger_launch_plan", {
     modelDir: state.tagger.modelDir || state.settings?.taggerModelDir || "",
     datasetRoot: state.tagger.datasetRoot,
