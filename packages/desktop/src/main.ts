@@ -660,6 +660,11 @@ function renderTagChip(tag: string, index: number): string {
   return `<button class="caption-tag-chip ${classifyTag(tag)}" type="button" data-remove-tag-index="${index}" title="Remove tag"><span>${escapeHtml(tag)}</span><span class="tag-chip-remove">x</span></button>`;
 }
 
+function renderDatasetStatusMessages(): string {
+  const d = state.dataset;
+  return `${d.loading ? `<p class="muted">Working...</p>` : ""}${d.message ? `<p class="success-text">${escapeHtml(d.message)}</p>` : ""}${d.error ? `<p class="error-text">${escapeHtml(d.error)}</p>` : ""}`;
+}
+
 function renderSelectedTagsEditor(selected: DatasetItem, scan?: DatasetScan): string {
   const tags = splitCaptionTags(state.dataset.draftCaption);
   const chips = tags.length ? tags.map(renderTagChip).join("") : `<span class="tag-empty">No tags</span>`;
@@ -673,8 +678,42 @@ function renderSelectedTagsEditor(selected: DatasetItem, scan?: DatasetScan): st
     </div>
     <details class="raw-caption-details">
       <summary>Raw caption text</summary>
-      <textarea id="caption-editor" class="raw-caption-editor" spellcheck="false">${escapeHtml(state.dataset.draftCaption || selected.captionText)}</textarea>
+      <textarea id="caption-editor" class="raw-caption-editor" spellcheck="false">${escapeHtml(state.dataset.draftCaption)}</textarea>
     </details>`;
+}
+
+function renderDatasetIssueList(item: DatasetItem): string {
+  return item.issues.length
+    ? item.issues.map((issue) => `<span class="issue-pill">${escapeHtml(issue)}</span>`).join("")
+    : `<span class="issue-pill issue-ok">ok</span>`;
+}
+
+function renderDatasetRowTags(item: DatasetItem): string {
+  const rowTags = (item.tags?.length ? item.tags : splitCaptionTags(item.captionText)).slice(0, 5);
+  return rowTags.length
+    ? `<span class="dataset-row-tags">${rowTags.map((tag) => `<span class="mini-tag ${classifyTag(tag)}">${escapeHtml(tag)}</span>`).join("")}</span>`
+    : `<span class="dataset-row-tags"><span class="mini-tag empty">empty</span></span>`;
+}
+
+function renderDatasetRowContent(item: DatasetItem): string {
+  return `
+    <img src="${escapeHtml(imageSrc(item.imagePath))}" alt="" loading="lazy">
+    <span class="dataset-row-main"><strong>${escapeHtml(item.relativePath)}</strong><span>${escapeHtml(imageSizeLabel(item))} / ${item.tagCount} tags</span>${renderDatasetRowTags(item)}<span class="issue-list">${renderDatasetIssueList(item)}</span></span>`;
+}
+
+function renderDatasetRow(item: DatasetItem, selectedImagePath?: string): string {
+  return `<button class="dataset-row ${item.imagePath === selectedImagePath ? "selected" : ""}" type="button" data-image-path="${escapeHtml(item.imagePath)}">
+    ${renderDatasetRowContent(item)}
+  </button>`;
+}
+
+function renderDatasetEditorPanel(selected: DatasetItem | undefined, scan?: DatasetScan): string {
+  if (!selected) return `<h2>Caption Editor</h2><p class="muted">Select an image.</p>`;
+  return `
+    <div class="section-title"><div><h2>Visual Tag Editor</h2><p class="muted mono">${escapeHtml(selected.captionPath)}</p></div>${statusPill(selected.captionExists, "Exists", "Will create")}</div>
+    <div class="preview-block"><img src="${escapeHtml(imageSrc(selected.imagePath))}" alt=""><dl class="details"><div><dt>Image</dt><dd>${escapeHtml(selected.relativePath)}</dd></div><div><dt>Size</dt><dd>${escapeHtml(imageSizeLabel(selected))}</dd></div><div><dt>Tags</dt><dd>${selected.tagCount}</dd></div></dl></div>
+    ${renderSelectedTagsEditor(selected, scan)}
+    <div class="action-row"><button class="primary-button" id="save-caption" type="button">Save Caption</button><button class="secondary-button" id="reload-dataset" type="button">Rescan</button><button class="secondary-button" id="run-tagger-from-dataset" type="button">Run WD14 Tagger</button></div>`;
 }
 
 function renderDatasetStudio(): string {
@@ -703,14 +742,14 @@ function renderDatasetStudio(): string {
         <label>Caption extension<input id="caption-extension" value="${escapeHtml(d.captionExtension)}"></label>
         <label>Low-res threshold pixels<input id="min-pixels" type="number" min="0" step="1" value="${d.minPixels}"></label>
       </div>
-      ${d.loading ? `<p class="muted">Working...</p>` : ""}${d.message ? `<p class="success-text">${escapeHtml(d.message)}</p>` : ""}${d.error ? `<p class="error-text">${escapeHtml(d.error)}</p>` : ""}
+      <div id="dataset-status-messages">${renderDatasetStatusMessages()}</div>
     </section>
     ${scan ? `
       <section class="grid cards summary-grid">
-        <article class="card compact"><p class="eyebrow">Images</p><h3>${scan.imageCount}</h3></article>
-        <article class="card compact"><p class="eyebrow">Captions</p><h3>${scan.captionCount}</h3></article>
-        <article class="card compact"><p class="eyebrow">Missing</p><h3>${scan.missingCaptionCount}</h3></article>
-        <article class="card compact"><p class="eyebrow">Orphans</p><h3>${scan.orphanCaptionCount}</h3></article>
+        <article class="card compact"><p class="eyebrow">Images</p><h3 id="dataset-summary-images">${scan.imageCount}</h3></article>
+        <article class="card compact"><p class="eyebrow">Captions</p><h3 id="dataset-summary-captions">${scan.captionCount}</h3></article>
+        <article class="card compact"><p class="eyebrow">Missing</p><h3 id="dataset-summary-missing">${scan.missingCaptionCount}</h3></article>
+        <article class="card compact"><p class="eyebrow">Orphans</p><h3 id="dataset-summary-orphans">${scan.orphanCaptionCount}</h3></article>
       </section>
       <section class="panel">
         <div class="section-title"><h2>Bulk Tag Tools</h2><span class="pill">all captions</span></div>
@@ -730,24 +769,11 @@ function renderDatasetStudio(): string {
         <div class="panel dataset-list-panel">
           <div class="section-title"><h2>Images</h2><span class="pill">${scan.shownItemCount}</span></div>
           <div class="dataset-list">
-            ${scan.items.map((item) => {
-              const issues = item.issues.length ? item.issues.map((issue) => `<span class="issue-pill">${escapeHtml(issue)}</span>`).join("") : `<span class="issue-pill issue-ok">ok</span>`;
-              const rowTags = (item.tags?.length ? item.tags : splitCaptionTags(item.captionText)).slice(0, 5);
-              const rowTagList = rowTags.length ? `<span class="dataset-row-tags">${rowTags.map((tag) => `<span class="mini-tag ${classifyTag(tag)}">${escapeHtml(tag)}</span>`).join("")}</span>` : `<span class="dataset-row-tags"><span class="mini-tag empty">empty</span></span>`;
-              return `<button class="dataset-row ${item.imagePath === d.selectedImagePath ? "selected" : ""}" type="button" data-image-path="${escapeHtml(item.imagePath)}">
-                <img src="${escapeHtml(imageSrc(item.imagePath))}" alt="" loading="lazy">
-                <span class="dataset-row-main"><strong>${escapeHtml(item.relativePath)}</strong><span>${escapeHtml(imageSizeLabel(item))} / ${item.tagCount} tags</span>${rowTagList}<span class="issue-list">${issues}</span></span>
-              </button>`;
-            }).join("")}
+            ${scan.items.map((item) => renderDatasetRow(item, d.selectedImagePath)).join("")}
           </div>
         </div>
-        <section class="panel editor-panel">
-          ${selected ? `
-            <div class="section-title"><div><h2>Visual Tag Editor</h2><p class="muted mono">${escapeHtml(selected.captionPath)}</p></div>${statusPill(selected.captionExists, "Exists", "Will create")}</div>
-            <div class="preview-block"><img src="${escapeHtml(imageSrc(selected.imagePath))}" alt=""><dl class="details"><div><dt>Image</dt><dd>${escapeHtml(selected.relativePath)}</dd></div><div><dt>Size</dt><dd>${escapeHtml(imageSizeLabel(selected))}</dd></div><div><dt>Tags</dt><dd>${selected.tagCount}</dd></div></dl></div>
-            ${renderSelectedTagsEditor(selected, scan)}
-            <div class="action-row"><button class="primary-button" id="save-caption" type="button">Save Caption</button><button class="secondary-button" id="reload-dataset" type="button">Rescan</button><button class="secondary-button" id="run-tagger-from-dataset" type="button">Run WD14 Tagger</button></div>
-          ` : `<h2>Caption Editor</h2><p class="muted">Select an image.</p>`}
+        <section class="panel editor-panel" id="dataset-editor-panel">
+          ${renderDatasetEditorPanel(selected, scan)}
         </section>
       </section>
       ${scan.orphanCaptions.length ? `<section class="panel"><h2>Orphan Caption Files</h2><div class="orphan-list">${scan.orphanCaptions.map((caption) => `<p class="mono">${escapeHtml(caption.relativePath)}</p>`).join("")}</div></section>` : ""}
@@ -1154,6 +1180,80 @@ function syncBulkControls(): void {
   state.dataset.caseSensitive = Boolean(document.querySelector<HTMLInputElement>("#bulk-case-sensitive")?.checked);
 }
 
+function refreshDatasetStatusMessages(): void {
+  const messages = document.querySelector<HTMLElement>("#dataset-status-messages");
+  if (messages) messages.innerHTML = renderDatasetStatusMessages();
+}
+
+function setElementText(id: string, value: string | number): void {
+  const element = document.querySelector<HTMLElement>(`#${id}`);
+  if (element) element.textContent = String(value);
+}
+
+function refreshDatasetSummary(): void {
+  const scan = state.dataset.scan;
+  if (!scan) return;
+  setElementText("dataset-summary-images", scan.imageCount);
+  setElementText("dataset-summary-captions", scan.captionCount);
+  setElementText("dataset-summary-missing", scan.missingCaptionCount);
+  setElementText("dataset-summary-orphans", scan.orphanCaptionCount);
+}
+
+function datasetRowButtons(): HTMLButtonElement[] {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>(".dataset-row"));
+}
+
+function refreshDatasetRowSelection(): void {
+  datasetRowButtons().forEach((button) => {
+    button.classList.toggle("selected", button.dataset.imagePath === state.dataset.selectedImagePath);
+  });
+}
+
+function refreshDatasetRow(item: DatasetItem): void {
+  const row = datasetRowButtons().find((button) => button.dataset.imagePath === item.imagePath);
+  if (!row) return;
+  row.innerHTML = renderDatasetRowContent(item);
+  row.classList.toggle("selected", item.imagePath === state.dataset.selectedImagePath);
+}
+
+function refreshDatasetSelectionView(): void {
+  refreshDatasetRowSelection();
+  const panel = document.querySelector<HTMLElement>("#dataset-editor-panel");
+  if (!panel) {
+    render();
+    return;
+  }
+  panel.innerHTML = renderDatasetEditorPanel(selectedDatasetItem(), state.dataset.scan);
+  bindDatasetEditorEvents();
+}
+
+function selectDatasetImage(imagePath: string): void {
+  const item = state.dataset.scan?.items.find((entry) => entry.imagePath === imagePath);
+  if (!item) return;
+  state.dataset.selectedImagePath = item.imagePath;
+  state.dataset.draftCaption = item.captionText;
+  updateActiveDatasetProfile();
+  queuePersistUiState();
+  refreshDatasetSelectionView();
+}
+
+function bindDatasetRowEvents(): void {
+  document.querySelectorAll<HTMLButtonElement>(".dataset-row").forEach((button) => {
+    button.addEventListener("click", () => selectDatasetImage(button.dataset.imagePath || ""));
+  });
+}
+
+function bindDatasetEditorEvents(): void {
+  document.querySelector("#caption-editor")?.addEventListener("input", (event) => state.dataset.draftCaption = (event.target as HTMLTextAreaElement).value);
+  document.querySelector("#tag-add-input")?.addEventListener("keydown", (event) => void handleTagAddInput(event as KeyboardEvent));
+  document.querySelectorAll<HTMLButtonElement>("[data-remove-tag-index]").forEach((button) => {
+    button.addEventListener("click", () => void removeSelectedTag(Number(button.dataset.removeTagIndex)));
+  });
+  document.querySelector("#save-caption")?.addEventListener("click", () => void saveSelectedCaption());
+  document.querySelector("#run-tagger-from-dataset")?.addEventListener("click", () => void runTaggerForCurrentDataset());
+  document.querySelector("#reload-dataset")?.addEventListener("click", () => void scanDataset());
+}
+
 function syncJobDraft(): void {
   if (!state.jobDraft) return;
   document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>("[data-job-field]").forEach((input) => {
@@ -1230,23 +1330,8 @@ function bindEvents(): void {
   document.querySelector("#save-dataset-profile")?.addEventListener("click", () => { syncDatasetControls(); void saveCurrentDatasetProfile(); });
   document.querySelector("#forget-dataset-profile")?.addEventListener("click", () => void forgetDatasetProfile());
   document.querySelector("#scan-dataset")?.addEventListener("click", () => { syncDatasetControls(); queuePersistUiState(); void scanDataset(); });
-  document.querySelector("#reload-dataset")?.addEventListener("click", () => void scanDataset());
-  document.querySelectorAll<HTMLButtonElement>(".dataset-row").forEach((button) => button.addEventListener("click", () => {
-    const item = state.dataset.scan?.items.find((entry) => entry.imagePath === button.dataset.imagePath);
-    if (!item) return;
-    state.dataset.selectedImagePath = item.imagePath;
-    state.dataset.draftCaption = item.captionText;
-    updateActiveDatasetProfile();
-    queuePersistUiState();
-    render();
-  }));
-  document.querySelector("#caption-editor")?.addEventListener("input", (event) => state.dataset.draftCaption = (event.target as HTMLTextAreaElement).value);
-  document.querySelector("#tag-add-input")?.addEventListener("keydown", (event) => void handleTagAddInput(event as KeyboardEvent));
-  document.querySelectorAll<HTMLButtonElement>("[data-remove-tag-index]").forEach((button) => {
-    button.addEventListener("click", () => void removeSelectedTag(Number(button.dataset.removeTagIndex)));
-  });
-  document.querySelector("#save-caption")?.addEventListener("click", () => void saveSelectedCaption());
-  document.querySelector("#run-tagger-from-dataset")?.addEventListener("click", () => void runTaggerForCurrentDataset());
+  bindDatasetRowEvents();
+  bindDatasetEditorEvents();
   document.querySelector("#apply-bulk-operation")?.addEventListener("click", () => { syncBulkControls(); void applyBulkOperation(); });
   document.querySelector("#create-job")?.addEventListener("click", () => void createJob());
   document.querySelector("#reload-jobs")?.addEventListener("click", () => void loadJobs());
@@ -1560,15 +1645,20 @@ function updateSelectedCaptionLocally(result: SaveCaptionResult): void {
 async function saveSelectedCaption(): Promise<void> {
   const selected = selectedDatasetItem();
   if (!selected) return;
+  const editor = document.querySelector<HTMLTextAreaElement>("#caption-editor");
+  if (editor) state.dataset.draftCaption = editor.value;
   try {
     const result = await bridgeData<SaveCaptionResult>("dataset_save_caption", { captionPath: selected.captionPath, text: state.dataset.draftCaption });
     updateSelectedCaptionLocally(result);
     state.dataset.message = `Saved ${result.tagCount} tags.`;
     state.dataset.error = undefined;
-    render();
+    refreshDatasetStatusMessages();
+    refreshDatasetSummary();
+    refreshDatasetRow(selected);
+    refreshDatasetSelectionView();
   } catch (error) {
     state.dataset.error = error instanceof Error ? error.message : String(error);
-    render();
+    refreshDatasetStatusMessages();
   }
 }
 
