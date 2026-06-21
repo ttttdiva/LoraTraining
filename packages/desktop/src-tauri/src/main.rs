@@ -3,12 +3,16 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
+use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
 const MAX_LOG_LINES: usize = 5_000;
+const BRIDGE_INIT: &str = include_str!("../../../../python/lora_training_gui/__init__.py");
+const BRIDGE_MAIN: &str = include_str!("../../../../python/lora_training_gui/bridge.py");
+const WD14_TAGGER: &str = include_str!("../../../../python/lora_training_gui/wd14_tagger.py");
 
 #[derive(Default)]
 struct ProcessRegistry {
@@ -40,16 +44,64 @@ fn project_root() -> PathBuf {
         return PathBuf::from(root);
     }
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    if let Some(root) = manifest_dir
-        .parent()
-        .and_then(|desktop| desktop.parent())
-        .and_then(|packages| packages.parent())
+    #[cfg(debug_assertions)]
     {
-        return root.to_path_buf();
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        if let Some(root) = manifest_dir
+            .parent()
+            .and_then(|desktop| desktop.parent())
+            .and_then(|packages| packages.parent())
+        {
+            return root.to_path_buf();
+        }
     }
 
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let sidecar_root = exe_dir.to_path_buf();
+            if sidecar_root.join("python/lora_training_gui/bridge.py").exists() {
+                return sidecar_root;
+            }
+        }
+    }
+
+    let runtime_root = bundled_runtime_root();
+    let _ = ensure_bundled_python(&runtime_root);
+    runtime_root
+}
+
+fn bundled_runtime_root() -> PathBuf {
+    if cfg!(windows) {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            return PathBuf::from(local_app_data).join("LoraTraining").join("runtime");
+        }
+    }
+
+    std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".lora_training_runtime")
+}
+
+fn ensure_bundled_python(root: &PathBuf) -> std::io::Result<()> {
+    write_embedded_file(root.join("python/lora_training_gui/__init__.py"), BRIDGE_INIT)?;
+    write_embedded_file(root.join("python/lora_training_gui/bridge.py"), BRIDGE_MAIN)?;
+    write_embedded_file(root.join("python/lora_training_gui/wd14_tagger.py"), WD14_TAGGER)?;
+    Ok(())
+}
+
+fn write_embedded_file(path: PathBuf, contents: &str) -> std::io::Result<()> {
+    if path.exists() {
+        if let Ok(existing) = fs::read_to_string(&path) {
+            if existing == contents {
+                return Ok(());
+            }
+        }
+    }
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, contents)
 }
 
 fn python_path_env(project_root: &PathBuf) -> String {
