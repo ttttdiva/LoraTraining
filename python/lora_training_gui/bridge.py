@@ -1216,9 +1216,9 @@ def sample_launch_plan(payload: dict[str, Any]) -> dict[str, Any]:
     return success("sample_launch_plan", {"job": job, "plan": plan, "errors": errors})
 
 
-def tagger_model_status(_: dict[str, Any]) -> dict[str, Any]:
+def tagger_model_status(payload: dict[str, Any]) -> dict[str, Any]:
     settings = load_settings_dict()
-    model_dir = Path(str(settings.get("taggerModelDir") or DEFAULT_TAGGER_MODEL_DIR)).expanduser().resolve()
+    model_dir = Path(str(payload.get("modelDir") or settings.get("taggerModelDir") or DEFAULT_TAGGER_MODEL_DIR)).expanduser().resolve()
     files = {
         "model": str(model_dir / "model.onnx"),
         "tags": str(model_dir / "selected_tags.csv"),

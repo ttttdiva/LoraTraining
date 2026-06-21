@@ -123,6 +123,7 @@ const state: {
   plans: Record<string, LaunchPlan | undefined>;
   processes: Record<string, ProcessStatus | undefined>;
   tagger: {
+    modelDir: string;
     datasetRoot: string;
     threshold: number;
     characterThreshold: number;
@@ -151,6 +152,7 @@ const state: {
   plans: {},
   processes: {},
   tagger: {
+    modelDir: "",
     datasetRoot: "",
     threshold: 0.35,
     characterThreshold: 0.35,
@@ -502,6 +504,13 @@ function renderTagger(): string {
     </section>
     <section class="panel">
       <div class="section-title"><h2>Model</h2>${statusPill(Boolean(status.modelExists && status.tagsExists), "Ready", "Missing")}</div>
+      <div class="form-grid">
+        <label>Model dir<input id="tagger-model-dir" value="${escapeHtml(state.tagger.modelDir || status.modelDir || state.settings?.taggerModelDir || "")}"></label>
+      </div>
+      <div class="action-row">
+        <button class="secondary-button" id="choose-tagger-model-dir" type="button">Choose Model Dir</button>
+        <button class="primary-button" id="save-tagger-model-dir" type="button">Save Model Dir</button>
+      </div>
       <dl class="details">
         <div><dt>Model dir</dt><dd class="mono">${escapeHtml(status.modelDir || state.settings?.taggerModelDir || "")}</dd></div>
         <div><dt>model.onnx</dt><dd>${statusPill(Boolean(status.modelExists), "Found", "Missing")}</dd></div>
@@ -574,6 +583,14 @@ function syncJobDraft(): void {
   setPath(state.jobDraft, "sample.prompts", textValue("job-sample-prompts"));
 }
 
+function syncTaggerControls(): void {
+  state.tagger.modelDir = textValue("tagger-model-dir").trim();
+  state.tagger.datasetRoot = textValue("tagger-dataset-root").trim();
+  state.tagger.threshold = numberValue("tagger-threshold", 0.35);
+  state.tagger.characterThreshold = numberValue("tagger-character-threshold", 0.35);
+  state.tagger.mode = textValue("tagger-mode") === "overwrite" ? "overwrite" : "merge";
+}
+
 function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-view]").forEach((element) => element.addEventListener("click", () => {
     const view = element.dataset.view as ViewId;
@@ -608,11 +625,13 @@ function bindEvents(): void {
   document.querySelector("#plan-sample")?.addEventListener("click", () => void planSample());
   document.querySelector("#start-sample")?.addEventListener("click", () => void startPlan("sample"));
   document.querySelectorAll<HTMLButtonElement>("[data-stop-process]").forEach((button) => button.addEventListener("click", () => void stopProcess(button.dataset.stopProcess || "")));
-  document.querySelector("#refresh-tagger")?.addEventListener("click", () => void loadTaggerStatus());
+  document.querySelector("#refresh-tagger")?.addEventListener("click", () => { syncTaggerControls(); void loadTaggerStatus(); });
   document.querySelector("#install-tagger-deps")?.addEventListener("click", () => void startTaggerPlan("tagger_install_deps_plan"));
-  document.querySelector("#download-tagger-model")?.addEventListener("click", () => void startTaggerPlan("tagger_download_plan"));
+  document.querySelector("#download-tagger-model")?.addEventListener("click", () => { syncTaggerControls(); void startTaggerPlan("tagger_download_plan"); });
+  document.querySelector("#choose-tagger-model-dir")?.addEventListener("click", () => void chooseTaggerModelDir());
+  document.querySelector("#save-tagger-model-dir")?.addEventListener("click", () => { syncTaggerControls(); void saveTaggerModelDir(); });
   document.querySelector("#choose-tagger-root")?.addEventListener("click", () => void chooseTaggerRoot());
-  document.querySelector("#run-tagger")?.addEventListener("click", () => void runTagger());
+  document.querySelector("#run-tagger")?.addEventListener("click", () => { syncTaggerControls(); void runTagger(); });
 }
 
 async function loadInitial(): Promise<void> {
@@ -621,6 +640,7 @@ async function loadInitial(): Promise<void> {
   try {
     const [settings, health] = await Promise.all([bridgeData<Settings>("settings_get"), bridgeData<HealthData>("health_check")]);
     state.settings = settings;
+    state.tagger.modelDir = settings.taggerModelDir || state.tagger.modelDir;
     state.health = health;
     state.healthError = undefined;
     await Promise.all([loadJobs(), loadTaggerStatus()]);
@@ -776,13 +796,32 @@ async function startPlan(kind: "train" | "tensorboard" | "sample"): Promise<void
 }
 
 async function loadTaggerStatus(): Promise<void> {
-  state.tagger.modelStatus = await bridgeData<Record<string, unknown>>("tagger_model_status");
+  state.tagger.modelStatus = await bridgeData<Record<string, unknown>>("tagger_model_status", { modelDir: state.tagger.modelDir || state.settings?.taggerModelDir || "" });
+  if (!state.tagger.modelDir) state.tagger.modelDir = String(state.tagger.modelStatus.modelDir || state.settings?.taggerModelDir || "");
   render();
 }
 
 async function startTaggerPlan(job: string): Promise<void> {
-  const result = await bridgeData<{ plan: LaunchPlan }>(job);
+  const payload = job === "tagger_download_plan" ? { modelDir: state.tagger.modelDir || state.settings?.taggerModelDir || "" } : {};
+  const result = await bridgeData<{ plan: LaunchPlan }>(job, payload);
   await startProcess(result.plan);
+}
+
+async function chooseTaggerModelDir(): Promise<void> {
+  const result = await open({ directory: true, multiple: false, title: "Select WD14 model folder" });
+  if (typeof result !== "string") return;
+  state.tagger.modelDir = result;
+  await saveTaggerModelDir();
+}
+
+async function saveTaggerModelDir(): Promise<void> {
+  if (!state.settings) return;
+  const modelDir = state.tagger.modelDir.trim();
+  if (!modelDir) return;
+  state.settings = await bridgeData<Settings>("settings_save", { ...state.settings, taggerModelDir: modelDir });
+  state.tagger.modelDir = state.settings.taggerModelDir;
+  state.tagger.message = "Saved model directory.";
+  await loadTaggerStatus();
 }
 
 async function chooseTaggerRoot(): Promise<void> {
@@ -793,11 +832,9 @@ async function chooseTaggerRoot(): Promise<void> {
 }
 
 async function runTagger(): Promise<void> {
-  state.tagger.datasetRoot = textValue("tagger-dataset-root").trim();
-  state.tagger.threshold = numberValue("tagger-threshold", 0.35);
-  state.tagger.characterThreshold = numberValue("tagger-character-threshold", 0.35);
-  state.tagger.mode = textValue("tagger-mode") === "overwrite" ? "overwrite" : "merge";
+  syncTaggerControls();
   const result = await bridgeData<{ plan: LaunchPlan }>("tagger_launch_plan", {
+    modelDir: state.tagger.modelDir || state.settings?.taggerModelDir || "",
     datasetRoot: state.tagger.datasetRoot,
     threshold: state.tagger.threshold,
     characterThreshold: state.tagger.characterThreshold,
