@@ -17,6 +17,16 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from lora_training_gui.wd14_tagger import (
+    LEGACY_MODEL_ONNX_FILE,
+    LEGACY_MODEL_TAGS_FILE,
+    MODEL_DISPLAY_NAME,
+    MODEL_ID,
+    MODEL_ONNX_FILE,
+    MODEL_TAGS_FILE,
+    resolve_model_files,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 KNOWN_TOOL_ROOT = Path("D:/tool/lora_trainer")
@@ -1219,16 +1229,27 @@ def sample_launch_plan(payload: dict[str, Any]) -> dict[str, Any]:
 def tagger_model_status(payload: dict[str, Any]) -> dict[str, Any]:
     settings = load_settings_dict()
     model_dir = Path(str(payload.get("modelDir") or settings.get("taggerModelDir") or DEFAULT_TAGGER_MODEL_DIR)).expanduser().resolve()
+    model_path, tags_path = resolve_model_files(model_dir)
     files = {
-        "model": str(model_dir / "model.onnx"),
-        "tags": str(model_dir / "selected_tags.csv"),
+        "model": str(model_path),
+        "tags": str(tags_path),
+        "preferredModel": str(model_dir / MODEL_ONNX_FILE),
+        "preferredTags": str(model_dir / MODEL_TAGS_FILE),
+        "legacyModel": str(model_dir / LEGACY_MODEL_ONNX_FILE),
+        "legacyTags": str(model_dir / LEGACY_MODEL_TAGS_FILE),
     }
     return success(
         "tagger_model_status",
         {
+            "modelName": MODEL_DISPLAY_NAME,
+            "modelId": MODEL_ID,
             "modelDir": str(model_dir),
-            "modelExists": Path(files["model"]).exists(),
-            "tagsExists": Path(files["tags"]).exists(),
+            "modelFileName": model_path.name,
+            "tagsFileName": tags_path.name,
+            "preferredModelFileName": MODEL_ONNX_FILE,
+            "preferredTagsFileName": MODEL_TAGS_FILE,
+            "modelExists": model_path.exists(),
+            "tagsExists": tags_path.exists(),
             "files": files,
         },
     )

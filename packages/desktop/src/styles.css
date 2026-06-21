@@ -365,6 +365,10 @@ h3 {
   margin-top: 2px;
 }
 
+.model-status-list div {
+  grid-template-columns: minmax(360px, 0.42fr) minmax(0, 1fr);
+}
+
 .metrics {
   margin-top: 14px;
 }

@@ -41,10 +41,10 @@ D:\AI\models\Hot\image\Tagger\
 
 必要ファイル:
 
-- `model.onnx`
-- `selected_tags.csv`
+- `wd-v1-4-convnext-tagger-v2.onnx`
+- `wd-v1-4-convnext-tagger-v2-selected_tags.csv`
 
-GUIの Tagger 画面からもダウンロードできます。
+これは `SmilingWolf/wd-v1-4-convnext-tagger-v2` 由来の `WD14 ConvNeXt Tagger v2` です。GUIの Tagger 画面からもダウンロードできます。旧名 `model.onnx` / `selected_tags.csv` が残っている場合は、実行時に明示名へ自動移行します。
 
 ## 開発コマンド
 

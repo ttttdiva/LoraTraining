@@ -9,10 +9,16 @@ from pathlib import Path
 
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+MODEL_ID = "SmilingWolf/wd-v1-4-convnext-tagger-v2"
+MODEL_DISPLAY_NAME = "WD14 ConvNeXt Tagger v2"
+MODEL_ONNX_FILE = "wd-v1-4-convnext-tagger-v2.onnx"
+MODEL_TAGS_FILE = "wd-v1-4-convnext-tagger-v2-selected_tags.csv"
+LEGACY_MODEL_ONNX_FILE = "model.onnx"
+LEGACY_MODEL_TAGS_FILE = "selected_tags.csv"
 MODEL_BASE_URL = "https://huggingface.co/SmilingWolf/wd-v1-4-convnext-tagger-v2/resolve/main"
 MODEL_FILES = {
-    "model.onnx": f"{MODEL_BASE_URL}/model.onnx",
-    "selected_tags.csv": f"{MODEL_BASE_URL}/selected_tags.csv",
+    MODEL_ONNX_FILE: f"{MODEL_BASE_URL}/model.onnx",
+    MODEL_TAGS_FILE: f"{MODEL_BASE_URL}/selected_tags.csv",
 }
 
 
@@ -43,8 +49,37 @@ def download_file(url: str, target: Path) -> None:
 
 def ensure_model(model_dir: Path) -> None:
     model_dir.mkdir(parents=True, exist_ok=True)
+    migrate_legacy_model_files(model_dir)
     for file_name, url in MODEL_FILES.items():
         download_file(url, model_dir / file_name)
+
+
+def migrate_legacy_model_files(model_dir: Path) -> None:
+    pairs = (
+        (LEGACY_MODEL_ONNX_FILE, MODEL_ONNX_FILE),
+        (LEGACY_MODEL_TAGS_FILE, MODEL_TAGS_FILE),
+    )
+    for legacy_name, preferred_name in pairs:
+        legacy = model_dir / legacy_name
+        preferred = model_dir / preferred_name
+        if legacy.exists() and not preferred.exists():
+            legacy.rename(preferred)
+            log(f"renamed: {legacy.name} -> {preferred.name}")
+
+
+def resolve_model_files(model_dir: Path) -> tuple[Path, Path]:
+    migrate_legacy_model_files(model_dir)
+    model_path = model_dir / MODEL_ONNX_FILE
+    tags_path = model_dir / MODEL_TAGS_FILE
+    if not model_path.exists():
+        legacy_model = model_dir / LEGACY_MODEL_ONNX_FILE
+        if legacy_model.exists():
+            model_path = legacy_model
+    if not tags_path.exists():
+        legacy_tags = model_dir / LEGACY_MODEL_TAGS_FILE
+        if legacy_tags.exists():
+            tags_path = legacy_tags
+    return model_path, tags_path
 
 
 def read_caption(path: Path) -> list[str]:
@@ -140,8 +175,9 @@ def run_tagger(args: argparse.Namespace) -> int:
     if not dataset_root.exists():
         raise FileNotFoundError(f"dataset root not found: {dataset_root}")
 
-    tags = load_tags(model_dir / "selected_tags.csv")
-    session = ort.InferenceSession(str(model_dir / "model.onnx"), providers=["CPUExecutionProvider"])
+    model_path, tags_path = resolve_model_files(model_dir)
+    tags = load_tags(tags_path)
+    session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
     images = iter_images(dataset_root, args.recursive)
     log(f"tagging {len(images)} images")
 

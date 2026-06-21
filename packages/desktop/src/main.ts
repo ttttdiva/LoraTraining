@@ -509,8 +509,9 @@ function renderTagger(): string {
         <button class="secondary-button compact-button" id="choose-tagger-model-dir" type="button">Browse</button>
       </div>
       <dl class="details model-status-list">
-        <div><dt>model.onnx</dt><dd>${statusPill(Boolean(status.modelExists), "Found", "Missing")}</dd></div>
-        <div><dt>selected_tags.csv</dt><dd>${statusPill(Boolean(status.tagsExists), "Found", "Missing")}</dd></div>
+        <div><dt>Model</dt><dd><strong>${escapeHtml(status.modelName || "WD14 ConvNeXt Tagger v2")}</strong><br><span class="mono">${escapeHtml(status.modelId || "SmilingWolf/wd-v1-4-convnext-tagger-v2")}</span></dd></div>
+        <div><dt>${escapeHtml(status.modelFileName || "wd-v1-4-convnext-tagger-v2.onnx")}</dt><dd>${statusPill(Boolean(status.modelExists), "Found", "Missing")}</dd></div>
+        <div><dt>${escapeHtml(status.tagsFileName || "wd-v1-4-convnext-tagger-v2-selected_tags.csv")}</dt><dd>${statusPill(Boolean(status.tagsExists), "Found", "Missing")}</dd></div>
       </dl>
     </section>
     <section class="panel">
