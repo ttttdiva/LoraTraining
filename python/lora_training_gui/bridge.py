@@ -406,6 +406,27 @@ def default_settings() -> dict[str, Any]:
             "taggerThreshold": 0.35,
             "characterThreshold": 0.35,
         },
+        "ui": {
+            "view": "dashboard",
+            "datasetRoot": "",
+            "datasetCaptionExtension": ".txt",
+            "datasetMinPixels": 0,
+            "datasetSelectedImagePath": "",
+            "taggerDatasetRoot": "",
+            "taggerThreshold": 0.35,
+            "taggerCharacterThreshold": 0.35,
+            "taggerMode": "merge",
+            "agentSourceRoot": "",
+            "agentJobName": "",
+            "agentGoal": "",
+            "agentIntent": "character",
+            "agentTriggerTag": "",
+            "agentArchitecture": "anima",
+            "agentEngineId": "",
+            "agentGpuIds": "0",
+            "agentMultiGpuMode": "single",
+            "selectedJobName": "",
+        },
     }
 
 
@@ -441,6 +462,8 @@ def load_settings_dict() -> dict[str, Any]:
             settings["defaults"].update(stored["defaults"])
         if isinstance(stored.get("agent"), dict):
             settings["agent"].update(stored["agent"])
+        if isinstance(stored.get("ui"), dict):
+            settings["ui"].update(stored["ui"])
         settings["engines"] = merge_engines(stored.get("engines"))
     return settings
 
@@ -452,6 +475,8 @@ def save_settings_dict(settings: dict[str, Any]) -> dict[str, Any]:
         merged["defaults"].update(settings["defaults"])
     if isinstance(settings.get("agent"), dict):
         merged["agent"].update(settings["agent"])
+    if isinstance(settings.get("ui"), dict):
+        merged["ui"].update(settings["ui"])
     merged["engines"] = merge_engines(settings.get("engines"))
     write_json(SETTINGS_PATH, merged)
     return merged

@@ -53,6 +53,27 @@ type Settings = {
     taggerThreshold?: number;
     characterThreshold?: number;
   };
+  ui?: {
+    view?: string;
+    datasetRoot?: string;
+    datasetCaptionExtension?: string;
+    datasetMinPixels?: number;
+    datasetSelectedImagePath?: string;
+    taggerDatasetRoot?: string;
+    taggerThreshold?: number;
+    taggerCharacterThreshold?: number;
+    taggerMode?: string;
+    agentSourceRoot?: string;
+    agentJobName?: string;
+    agentGoal?: string;
+    agentIntent?: string;
+    agentTriggerTag?: string;
+    agentArchitecture?: string;
+    agentEngineId?: string;
+    agentGpuIds?: string;
+    agentMultiGpuMode?: string;
+    selectedJobName?: string;
+  };
 };
 
 type DatasetItem = {
@@ -249,6 +270,7 @@ const state: {
 const appRoot = document.querySelector<HTMLDivElement>("#app");
 if (!appRoot) throw new Error("App root not found");
 const rootElement = appRoot;
+let persistUiTimer: number | undefined;
 
 function escapeHtml(value: unknown): string {
   return String(value ?? "")
@@ -303,6 +325,99 @@ function setPath(obj: any, path: string, value: unknown): void {
     target = target[part];
   }
   target[parts[parts.length - 1]] = value;
+}
+
+function validView(value: unknown): value is ViewId {
+  return ["dashboard", "agent", "dataset", "jobs", "tagger"].includes(String(value));
+}
+
+function validAgentIntent(value: unknown): value is "character" | "style" | "concept" {
+  return ["character", "style", "concept"].includes(String(value));
+}
+
+function validTaggerMode(value: unknown): value is "merge" | "overwrite" {
+  return ["merge", "overwrite"].includes(String(value));
+}
+
+function applyPersistedUi(settings: Settings): void {
+  const ui = settings.ui || {};
+  if (validView(ui.view)) state.view = ui.view;
+  if (typeof ui.datasetRoot === "string") state.dataset.root = ui.datasetRoot;
+  if (typeof ui.datasetCaptionExtension === "string" && ui.datasetCaptionExtension.trim()) state.dataset.captionExtension = ui.datasetCaptionExtension;
+  if (Number.isFinite(Number(ui.datasetMinPixels))) state.dataset.minPixels = Math.max(0, Number(ui.datasetMinPixels));
+  if (typeof ui.datasetSelectedImagePath === "string") state.dataset.selectedImagePath = ui.datasetSelectedImagePath;
+  if (typeof ui.taggerDatasetRoot === "string") state.tagger.datasetRoot = ui.taggerDatasetRoot;
+  if (Number.isFinite(Number(ui.taggerThreshold))) state.tagger.threshold = Number(ui.taggerThreshold);
+  if (Number.isFinite(Number(ui.taggerCharacterThreshold))) state.tagger.characterThreshold = Number(ui.taggerCharacterThreshold);
+  if (validTaggerMode(ui.taggerMode)) state.tagger.mode = ui.taggerMode;
+  if (typeof ui.agentSourceRoot === "string") state.agent.sourceRoot = ui.agentSourceRoot;
+  if (typeof ui.agentJobName === "string") state.agent.jobName = ui.agentJobName;
+  if (typeof ui.agentGoal === "string" && ui.agentGoal.trim()) state.agent.goal = ui.agentGoal;
+  if (validAgentIntent(ui.agentIntent)) state.agent.intent = ui.agentIntent;
+  if (typeof ui.agentTriggerTag === "string") state.agent.triggerTag = ui.agentTriggerTag;
+  if (typeof ui.agentArchitecture === "string" && ui.agentArchitecture) state.agent.architecture = ui.agentArchitecture;
+  if (typeof ui.agentEngineId === "string") state.agent.engineId = ui.agentEngineId;
+  if (typeof ui.agentGpuIds === "string" && ui.agentGpuIds.trim()) state.agent.gpuIds = ui.agentGpuIds;
+  if (typeof ui.agentMultiGpuMode === "string" && ui.agentMultiGpuMode) state.agent.multiGpuMode = ui.agentMultiGpuMode;
+  if (typeof ui.selectedJobName === "string") state.selectedJobName = ui.selectedJobName;
+}
+
+function currentUiSettings(): NonNullable<Settings["ui"]> {
+  return {
+    view: state.view,
+    datasetRoot: state.dataset.root,
+    datasetCaptionExtension: state.dataset.captionExtension,
+    datasetMinPixels: state.dataset.minPixels,
+    datasetSelectedImagePath: state.dataset.selectedImagePath || "",
+    taggerDatasetRoot: state.tagger.datasetRoot,
+    taggerThreshold: state.tagger.threshold,
+    taggerCharacterThreshold: state.tagger.characterThreshold,
+    taggerMode: state.tagger.mode,
+    agentSourceRoot: state.agent.sourceRoot,
+    agentJobName: state.agent.jobName,
+    agentGoal: state.agent.goal,
+    agentIntent: state.agent.intent,
+    agentTriggerTag: state.agent.triggerTag,
+    agentArchitecture: state.agent.architecture,
+    agentEngineId: state.agent.engineId,
+    agentGpuIds: state.agent.gpuIds,
+    agentMultiGpuMode: state.agent.multiGpuMode,
+    selectedJobName: state.selectedJobName || "",
+  };
+}
+
+function queuePersistUiState(): void {
+  if (!state.settings) return;
+  if (persistUiTimer !== undefined) window.clearTimeout(persistUiTimer);
+  persistUiTimer = window.setTimeout(() => void persistUiState(), 300);
+}
+
+async function persistUiState(): Promise<void> {
+  if (!state.settings) return;
+  persistUiTimer = undefined;
+  const next: Settings = {
+    ...state.settings,
+    agent: {
+      ...state.settings.agent,
+      provider: state.agent.provider,
+      model: state.agent.model,
+      baseUrl: state.agent.baseUrl,
+      apiKeyEnv: state.agent.apiKeyEnv,
+      imageMaxSide: state.agent.imageMaxSide,
+      outputFormat: state.agent.outputFormat,
+      taggerThreshold: state.tagger.threshold,
+      characterThreshold: state.tagger.characterThreshold,
+    },
+    ui: {
+      ...state.settings.ui,
+      ...currentUiSettings(),
+    },
+  };
+  try {
+    state.settings = await bridgeData<Settings>("settings_save", next as unknown as Record<string, unknown>);
+  } catch (error) {
+    console.error("failed to persist UI state", error);
+  }
 }
 
 async function runBridge<T>(job: string, payload: Record<string, unknown> = {}): Promise<BridgeEnvelope<T>> {
@@ -914,13 +1029,15 @@ function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-view]").forEach((element) => element.addEventListener("click", () => {
     const view = element.dataset.view as ViewId;
     state.view = view;
+    queuePersistUiState();
     render();
   }));
   document.querySelector("#refresh-health")?.addEventListener("click", () => void loadInitial());
   document.querySelector("#choose-agent-source")?.addEventListener("click", () => void chooseAgentSourceRoot());
-  document.querySelector("#build-agent-plan")?.addEventListener("click", () => { syncAgentControls(); void buildAgentPlan(); });
+  document.querySelector("#build-agent-plan")?.addEventListener("click", () => { syncAgentControls(); queuePersistUiState(); void buildAgentPlan(); });
   document.querySelector("#agent-provider")?.addEventListener("change", () => {
     applyAgentProviderDefaults(textValue("agent-provider"));
+    queuePersistUiState();
     render();
   });
   document.querySelector("#open-agent-job")?.addEventListener("click", () => void openAgentJob());
@@ -928,13 +1045,14 @@ function bindEvents(): void {
   document.querySelector("#start-agent-tagger")?.addEventListener("click", () => void startAgentPlan("tagger"));
   document.querySelector("#start-agent-train")?.addEventListener("click", () => void startAgentPlan("train"));
   document.querySelector("#choose-dataset-root")?.addEventListener("click", () => void chooseDatasetRoot());
-  document.querySelector("#scan-dataset")?.addEventListener("click", () => { syncDatasetControls(); void scanDataset(); });
+  document.querySelector("#scan-dataset")?.addEventListener("click", () => { syncDatasetControls(); queuePersistUiState(); void scanDataset(); });
   document.querySelector("#reload-dataset")?.addEventListener("click", () => void scanDataset());
   document.querySelectorAll<HTMLButtonElement>(".dataset-row").forEach((button) => button.addEventListener("click", () => {
     const item = state.dataset.scan?.items.find((entry) => entry.imagePath === button.dataset.imagePath);
     if (!item) return;
     state.dataset.selectedImagePath = item.imagePath;
     state.dataset.draftCaption = item.captionText;
+    queuePersistUiState();
     render();
   }));
   document.querySelector("#caption-editor")?.addEventListener("input", (event) => state.dataset.draftCaption = (event.target as HTMLTextAreaElement).value);
@@ -966,13 +1084,13 @@ function bindEvents(): void {
   document.querySelector("#plan-sample")?.addEventListener("click", () => void planSample());
   document.querySelector("#start-sample")?.addEventListener("click", () => void startPlan("sample"));
   document.querySelectorAll<HTMLButtonElement>("[data-stop-process]").forEach((button) => button.addEventListener("click", () => void stopProcess(button.dataset.stopProcess || "")));
-  document.querySelector("#refresh-tagger")?.addEventListener("click", () => { syncTaggerControls(); void loadTaggerStatus(); });
+  document.querySelector("#refresh-tagger")?.addEventListener("click", () => { syncTaggerControls(); queuePersistUiState(); void loadTaggerStatus(); });
   document.querySelector("#install-tagger-deps")?.addEventListener("click", () => void startTaggerPlan("tagger_install_deps_plan"));
   document.querySelector("#download-tagger-model")?.addEventListener("click", () => void downloadTaggerModel());
   document.querySelector("#choose-tagger-model-dir")?.addEventListener("click", () => void chooseTaggerModelDir());
   document.querySelector("#tagger-model-dir")?.addEventListener("change", () => { syncTaggerControls(); void persistTaggerModelDir().then(loadTaggerStatus); });
   document.querySelector("#choose-tagger-root")?.addEventListener("click", () => void chooseTaggerRoot());
-  document.querySelector("#run-tagger")?.addEventListener("click", () => { syncTaggerControls(); void runTagger(); });
+  document.querySelector("#run-tagger")?.addEventListener("click", () => { syncTaggerControls(); queuePersistUiState(); void runTagger(); });
   document.onkeydown = handleGlobalKeyDown;
   document.onclick = handleDocumentClick;
 }
@@ -1023,12 +1141,19 @@ async function loadInitial(): Promise<void> {
     state.agent.architecture = String(settings.defaults?.architecture || state.agent.architecture);
     state.agent.gpuIds = String(settings.defaults?.gpuIds || state.agent.gpuIds);
     state.agent.multiGpuMode = String(settings.defaults?.multiGpuMode || state.agent.multiGpuMode);
+    applyPersistedUi(settings);
     state.health = health;
     if (!state.agent.model || !state.agent.apiKeyEnv || !state.agent.baseUrl) {
       applyAgentProviderDefaults(state.agent.provider);
     }
     state.healthError = undefined;
     await Promise.all([loadJobs(), loadTaggerStatus()]);
+    if (state.selectedJobName && state.jobs.some((job) => job.name === state.selectedJobName)) {
+      await selectJob(state.selectedJobName);
+    }
+    if (state.view === "dataset" && state.dataset.root) {
+      await scanDataset();
+    }
   } catch (error) {
     state.healthError = error instanceof Error ? error.message : String(error);
   } finally {
@@ -1046,6 +1171,7 @@ async function chooseAgentSourceRoot(): Promise<void> {
   }
   state.dataset.root = result;
   state.tagger.datasetRoot = result;
+  queuePersistUiState();
   render();
 }
 
@@ -1081,6 +1207,7 @@ async function buildAgentPlan(): Promise<void> {
     state.plans.agentTagger = result.taggerPlan;
     state.plans.agentTrain = result.trainPlan;
     await loadJobs();
+    queuePersistUiState();
   } catch (error) {
     state.agent.error = error instanceof Error ? error.message : String(error);
   } finally {
@@ -1094,6 +1221,7 @@ async function openAgentJob(): Promise<void> {
   if (!jobName) return;
   await selectJob(jobName);
   state.view = "jobs";
+  queuePersistUiState();
   render();
 }
 
@@ -1108,6 +1236,7 @@ async function chooseDatasetRoot(): Promise<void> {
   if (typeof result !== "string") return;
   state.dataset.root = result;
   state.tagger.datasetRoot = result;
+  queuePersistUiState();
   await scanDataset();
 }
 
@@ -1124,6 +1253,7 @@ async function scanDataset(): Promise<void> {
     state.dataset.selectedImagePath = selected?.imagePath;
     state.dataset.draftCaption = selected?.captionText || "";
     state.dataset.message = `Scanned ${scan.imageCount} images.`;
+    queuePersistUiState();
   } catch (error) {
     state.dataset.error = error instanceof Error ? error.message : String(error);
   } finally {
@@ -1164,6 +1294,7 @@ async function createJob(): Promise<void> {
   const result = await bridgeData<{ job: Job }>("job_create", { name });
   state.jobDraft = result.job;
   state.selectedJobName = result.job.name;
+  queuePersistUiState();
   await loadJobs();
   render();
 }
@@ -1175,6 +1306,7 @@ async function selectJob(name: string): Promise<void> {
   state.jobDraft = result.job;
   state.jobMessage = undefined;
   state.jobError = undefined;
+  queuePersistUiState();
   render();
 }
 
@@ -1215,6 +1347,7 @@ async function saveJob(): Promise<void> {
   state.selectedJobName = result.job.name;
   state.jobMessage = "Saved job.";
   await loadJobs();
+  queuePersistUiState();
   render();
 }
 
@@ -1246,6 +1379,7 @@ async function cloneJobByName(source: string): Promise<void> {
     state.jobMessage = `Cloned ${source}.`;
     state.jobError = undefined;
     await loadJobs();
+    queuePersistUiState();
   } catch (error) {
     state.jobError = error instanceof Error ? error.message : String(error);
   } finally {
@@ -1269,6 +1403,7 @@ async function renameJob(source: string): Promise<void> {
     state.jobMessage = `Renamed to ${result.job.name}.`;
     state.jobError = undefined;
     await loadJobs();
+    queuePersistUiState();
   } catch (error) {
     state.jobError = error instanceof Error ? error.message : String(error);
   } finally {
@@ -1293,6 +1428,7 @@ async function deleteJobByName(name?: string): Promise<void> {
     state.jobMessage = `Deleted ${name}.`;
     state.jobError = undefined;
     await loadJobs();
+    queuePersistUiState();
   } catch (error) {
     state.jobError = error instanceof Error ? error.message : String(error);
   } finally {
@@ -1371,11 +1507,13 @@ async function chooseTaggerRoot(): Promise<void> {
   const result = await open({ directory: true, multiple: false, title: "Select dataset folder" });
   if (typeof result !== "string") return;
   state.tagger.datasetRoot = result;
+  queuePersistUiState();
   render();
 }
 
 async function runTagger(): Promise<void> {
   syncTaggerControls();
+  queuePersistUiState();
   await persistTaggerModelDir();
   const result = await bridgeData<{ plan: LaunchPlan }>("tagger_launch_plan", {
     modelDir: state.tagger.modelDir || state.settings?.taggerModelDir || "",
