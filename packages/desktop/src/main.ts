@@ -11,12 +11,28 @@ type BridgeEnvelope<T> = {
 type ToolStatus = { name: string; available: boolean; version?: string; path?: string; error?: string };
 type GpuInfo = { index: number; name: string; memoryTotalMiB?: number; driverVersion?: string; temperatureC?: number; utilizationPct?: number };
 type EngineCandidate = { id: string; name: string; type: string; root: string; available: boolean; notes: string[] };
+type AgentProvider = {
+  id: string;
+  label: string;
+  kind: "api" | "cli";
+  available: boolean;
+  apiKeyEnv?: string;
+  apiKeyConfigured?: boolean;
+  model: string;
+  baseUrl?: string;
+  bin?: string;
+  path?: string;
+  error?: string;
+  defaultModel?: string;
+  defaultBaseUrl?: string;
+};
 type HealthData = {
   app: { projectRoot: string; bridgeRoot: string };
   system: { platform: string; pythonVersion: string; executable: string; cwd: string };
   tools: ToolStatus[];
   gpu: { available: boolean; gpus: GpuInfo[]; error?: string };
   engines: EngineCandidate[];
+  agentProviders?: AgentProvider[];
 };
 
 type Settings = {
@@ -25,6 +41,18 @@ type Settings = {
   taggerModelDir: string;
   engines: Array<{ id: string; name: string; type: string; root: string; venv: string }>;
   defaults: Record<string, unknown>;
+  agent?: {
+    provider?: string;
+    model?: string;
+    baseUrl?: string;
+    apiKeyEnv?: string;
+    temperature?: number;
+    imageMaxSide?: number;
+    outputFormat?: string;
+    captionMode?: string;
+    taggerThreshold?: number;
+    characterThreshold?: number;
+  };
 };
 
 type DatasetItem = {
@@ -77,6 +105,7 @@ type LaunchPlan = {
   displayCommand: string;
   files?: Record<string, string>;
   url?: string;
+  runRecordPath?: string;
 };
 type ProcessStatus = {
   kind?: string;
@@ -87,7 +116,7 @@ type ProcessStatus = {
 };
 type ProcessEnvelope = { id: string; status: ProcessStatus };
 
-type ViewId = "dashboard" | "dataset" | "jobs" | "tagger";
+type ViewId = "dashboard" | "agent" | "dataset" | "jobs" | "tagger";
 
 type DatasetState = {
   root: string;
@@ -107,6 +136,19 @@ type DatasetState = {
   caseSensitive: boolean;
 };
 
+type AgentAutopilotResult = {
+  job: Job;
+  jobPath: string;
+  sourceSummary: Record<string, any>;
+  recommendation: Record<string, any>;
+  external: { called: boolean; ok: boolean; text?: string; error?: string; parsedJson?: Record<string, any>; provider?: AgentProvider };
+  files: Record<string, string>;
+  preprocessPlan?: LaunchPlan;
+  taggerPlan?: LaunchPlan;
+  trainPlan?: LaunchPlan;
+  trainErrors?: string[];
+};
+
 const state: {
   view: ViewId;
   health?: HealthData;
@@ -122,6 +164,28 @@ const state: {
   jobError?: string;
   plans: Record<string, LaunchPlan | undefined>;
   processes: Record<string, ProcessStatus | undefined>;
+  agent: {
+    sourceRoot: string;
+    jobName: string;
+    goal: string;
+    intent: "character" | "style" | "concept";
+    triggerTag: string;
+    provider: string;
+    model: string;
+    baseUrl: string;
+    apiKeyEnv: string;
+    architecture: string;
+    engineId: string;
+    gpuIds: string;
+    multiGpuMode: string;
+    imageMaxSide: number;
+    outputFormat: "keep" | "png" | "jpg";
+    callModel: boolean;
+    loading: boolean;
+    message?: string;
+    error?: string;
+    result?: AgentAutopilotResult;
+  };
   tagger: {
     modelDir: string;
     datasetRoot: string;
@@ -151,6 +215,25 @@ const state: {
   jobs: [],
   plans: {},
   processes: {},
+  agent: {
+    sourceRoot: "",
+    jobName: "",
+    goal: "Build a high quality LoRA from this unorganized image folder.",
+    intent: "character",
+    triggerTag: "",
+    provider: "codex-cli",
+    model: "gpt-5-codex",
+    baseUrl: "",
+    apiKeyEnv: "",
+    architecture: "anima",
+    engineId: "",
+    gpuIds: "0",
+    multiGpuMode: "single",
+    imageMaxSide: 1536,
+    outputFormat: "png",
+    callModel: true,
+    loading: false,
+  },
   tagger: {
     modelDir: "",
     datasetRoot: "",
@@ -179,6 +262,26 @@ function statusPill(ok: boolean, okLabel = "OK", badLabel = "Check"): string {
 function formatMiB(value?: number): string {
   if (!value) return "-";
   return value >= 1024 ? `${(value / 1024).toFixed(1)} GB` : `${value} MB`;
+}
+
+function agentProviders(): AgentProvider[] {
+  return state.health?.agentProviders || [];
+}
+
+function selectedAgentProvider(): AgentProvider | undefined {
+  return agentProviders().find((provider) => provider.id === state.agent.provider);
+}
+
+function providerStatus(provider: AgentProvider): string {
+  if (provider.kind === "cli") return provider.path || provider.error || provider.bin || "";
+  if (provider.id === "ollama" || provider.id === "openai_compatible_local") return provider.error || provider.baseUrl || "";
+  return provider.apiKeyConfigured ? provider.apiKeyEnv || "" : provider.error || provider.apiKeyEnv || "";
+}
+
+function planCommand(plan?: LaunchPlan): string {
+  if (!plan) return "";
+  const record = plan.runRecordPath ? `\n\nRun record: ${plan.runRecordPath}` : "";
+  return `${plan.displayCommand}${record}`;
 }
 
 function getPath(obj: any, path: string, fallback: unknown = ""): any {
@@ -385,6 +488,100 @@ function renderLogs(processId: string): string {
   return `<pre class="log-box">${escapeHtml((process.logs || []).slice(-300).join("\n"))}</pre>`;
 }
 
+function renderAgentAutopilot(): string {
+  const a = state.agent;
+  const provider = selectedAgentProvider();
+  const result = a.result;
+  const preprocessId = result?.preprocessPlan?.id || `agent-preprocess:${result?.job?.name || a.jobName || "autopilot_job"}`;
+  const taggerId = result?.taggerPlan?.id || `tagger:${(result?.job?.dataset?.imageDir || "dataset").split(/[\\/]/).pop() || "dataset"}`;
+  const trainId = result?.trainPlan?.id || `train:${result?.job?.name || a.jobName || "autopilot_job"}`;
+  const providerRows = agentProviders().map((item) => `
+    <tr>
+      <td>${escapeHtml(item.label)}</td>
+      <td>${statusPill(item.available, item.kind === "cli" ? "Found" : "Ready", "Check")}</td>
+      <td class="mono">${escapeHtml(item.model || item.defaultModel || "")}</td>
+      <td class="mono">${escapeHtml(providerStatus(item))}</td>
+    </tr>`).join("");
+  const summary = result?.sourceSummary;
+  const recommendation = result?.recommendation;
+  return `
+    <section class="hero-band">
+      <div><p class="eyebrow">Agent Autopilot</p><h1>Dataset Agent</h1><p class="lead">Point it at an unorganized image folder, then generate preprocessing, tagging, and training settings.</p></div>
+      <div class="action-row"><button class="secondary-button" id="choose-agent-source" type="button">Choose Folder</button><button class="primary-button" id="build-agent-plan" type="button" ${a.sourceRoot || a.loading ? "" : "disabled"}>${a.loading ? "Working..." : "Build Plan"}</button></div>
+    </section>
+    <section class="grid two">
+      <article class="panel">
+        <div class="section-title"><h2>Input</h2>${provider ? statusPill(provider.available, "Provider OK", "Provider Check") : ""}</div>
+        <div class="form-grid">
+          <label>Source images<input id="agent-source-root" value="${escapeHtml(a.sourceRoot)}" placeholder="D:\\datasets\\raw_images"></label>
+          <label>Job name<input id="agent-job-name" value="${escapeHtml(a.jobName)}" placeholder="my_lora_agent"></label>
+          <label>Intent<select id="agent-intent">
+            ${["character", "style", "concept"].map((item) => `<option value="${item}" ${a.intent === item ? "selected" : ""}>${item}</option>`).join("")}
+          </select></label>
+          <label>Trigger tag<input id="agent-trigger-tag" value="${escapeHtml(a.triggerTag)}" placeholder="character_token"></label>
+          <label>Architecture<select id="agent-architecture">
+            ${["anima", "sd15", "sd2", "sdxl"].map((item) => `<option value="${item}" ${a.architecture === item ? "selected" : ""}>${item}</option>`).join("")}
+          </select></label>
+          <label>Engine<select id="agent-engine-id">
+            ${(state.settings?.engines || []).map((engine) => `<option value="${escapeHtml(engine.id)}" ${a.engineId === engine.id ? "selected" : ""}>${escapeHtml(engine.id)}</option>`).join("")}
+          </select></label>
+          <label>GPU IDs<input id="agent-gpu-ids" value="${escapeHtml(a.gpuIds)}" placeholder="0,1"></label>
+          <label>Multi GPU<select id="agent-multi-gpu-mode">
+            ${["single", "ddp", "fsdp", "fsdp2", "deepspeed"].map((item) => `<option value="${item}" ${a.multiGpuMode === item ? "selected" : ""}>${item}</option>`).join("")}
+          </select></label>
+          <label>Image max side<input id="agent-image-max-side" type="number" min="512" step="64" value="${a.imageMaxSide}"></label>
+          <label>Output format<select id="agent-output-format">
+            ${["png", "jpg", "keep"].map((item) => `<option value="${item}" ${a.outputFormat === item ? "selected" : ""}>${item}</option>`).join("")}
+          </select></label>
+        </div>
+        <label class="textarea-label">Goal<textarea id="agent-goal">${escapeHtml(a.goal)}</textarea></label>
+      </article>
+      <article class="panel">
+        <div class="section-title"><h2>Agent Provider</h2><span class="pill">${escapeHtml(provider?.kind || "-")}</span></div>
+        <div class="form-grid">
+          <label>Provider<select id="agent-provider">
+            ${agentProviders().map((item) => `<option value="${escapeHtml(item.id)}" ${a.provider === item.id ? "selected" : ""}>${escapeHtml(item.label)}</option>`).join("")}
+          </select></label>
+          <label>Model<input id="agent-model" value="${escapeHtml(a.model)}"></label>
+          <label>Base URL<input id="agent-base-url" value="${escapeHtml(a.baseUrl)}" placeholder="${escapeHtml(provider?.defaultBaseUrl || "")}"></label>
+          <label>API key env<input id="agent-api-key-env" value="${escapeHtml(a.apiKeyEnv)}" placeholder="${escapeHtml(provider?.apiKeyEnv || "")}"></label>
+          <label class="check-row"><input id="agent-call-model" type="checkbox" ${a.callModel ? "checked" : ""}>Ask selected agent</label>
+        </div>
+        <table class="provider-table"><thead><tr><th>Provider</th><th>Status</th><th>Model</th><th>Detail</th></tr></thead><tbody>${providerRows}</tbody></table>
+      </article>
+    </section>
+    ${a.message ? `<p class="success-text">${escapeHtml(a.message)}</p>` : ""}${a.error ? `<p class="error-text">${escapeHtml(a.error)}</p>` : ""}
+    ${result ? `
+      <section class="grid cards summary-grid">
+        <article class="card compact"><p class="eyebrow">Images</p><h3>${escapeHtml(summary?.imageCount ?? 0)}</h3></article>
+        <article class="card compact"><p class="eyebrow">Missing captions</p><h3>${escapeHtml(summary?.missingCaptionCount ?? 0)}</h3></article>
+        <article class="card compact"><p class="eyebrow">Median long edge</p><h3>${escapeHtml(summary?.medianLongEdge ?? 0)}</h3></article>
+        <article class="card compact"><p class="eyebrow">Duplicates</p><h3>${escapeHtml(summary?.duplicateHashCount ?? 0)}</h3></article>
+      </section>
+      <section class="panel">
+        <div class="section-title"><div><h2>Generated Job</h2><p class="muted mono">${escapeHtml(result.jobPath)}</p></div><span class="pill">${escapeHtml(result.job.name)}</span></div>
+        <div class="action-row">
+          <button class="primary-button" id="open-agent-job" type="button">Open Job Editor</button>
+          <button class="secondary-button" id="start-agent-preprocess" type="button" ${result.preprocessPlan ? "" : "disabled"}>Run Preprocess</button>
+          <button class="secondary-button" id="start-agent-tagger" type="button" ${result.taggerPlan ? "" : "disabled"}>Run WD14 Tagger</button>
+          <button class="secondary-button" id="start-agent-train" type="button" ${result.trainPlan ? "" : "disabled"}>Start Training</button>
+          <button class="secondary-button" data-stop-process="${preprocessId}" type="button">Stop Preprocess</button>
+          <button class="secondary-button" data-stop-process="${taggerId}" type="button">Stop Tagger</button>
+          <button class="secondary-button" data-stop-process="${trainId}" type="button">Stop Training</button>
+        </div>
+        ${result.trainErrors?.length ? `<p class="error-text">${escapeHtml(result.trainErrors.join("\n"))}</p>` : ""}
+      </section>
+      <section class="grid two">
+        <article class="panel"><h2>Recommendation</h2><pre class="json-box">${escapeHtml(JSON.stringify(recommendation, null, 2))}</pre></article>
+        <article class="panel"><h2>Agent Response</h2><pre class="json-box">${escapeHtml(result.external?.text || result.external?.error || "Heuristic only.")}</pre></article>
+      </section>
+      <section class="grid two">
+        <article class="panel"><h2>Preprocess / Tagger Plans</h2>${result.preprocessPlan ? `<pre>${escapeHtml(planCommand(result.preprocessPlan))}</pre>` : ""}${result.taggerPlan ? `<pre>${escapeHtml(planCommand(result.taggerPlan))}</pre>` : ""}${renderLogs(preprocessId)}${renderLogs(taggerId)}</article>
+        <article class="panel"><h2>Training Plan</h2>${result.trainPlan ? `<pre>${escapeHtml(planCommand(result.trainPlan))}</pre>` : ""}${renderLogs(trainId)}</article>
+      </section>
+    ` : `<section class="panel"><p class="muted">No Autopilot plan yet.</p></section>`}`;
+}
+
 function renderJobEditor(): string {
   if (!state.jobDraft) return `<section class="panel"><p class="muted">Select or create a job.</p></section>`;
   const job = state.jobDraft;
@@ -535,9 +732,9 @@ function render(): void {
     <main>
       <nav class="sidebar" aria-label="Primary">
         <div class="brand"><span class="brand-mark">LT</span><div><strong>LoraTraining</strong><span>Desktop GUI</span></div></div>
-        ${(["dashboard", "dataset", "jobs", "tagger"] as ViewId[]).map((view) => `<button class="nav-item ${state.view === view ? "active" : ""}" data-view="${view}" type="button">${view === "dashboard" ? "Dashboard" : view === "dataset" ? "Dataset Studio" : view === "jobs" ? "Jobs" : "WD14 Tagger"}</button>`).join("")}
+        ${(["dashboard", "agent", "dataset", "jobs", "tagger"] as ViewId[]).map((view) => `<button class="nav-item ${state.view === view ? "active" : ""}" data-view="${view}" type="button">${view === "dashboard" ? "Dashboard" : view === "agent" ? "Agent Autopilot" : view === "dataset" ? "Dataset Studio" : view === "jobs" ? "Jobs" : "WD14 Tagger"}</button>`).join("")}
       </nav>
-      <div class="content">${state.view === "dataset" ? renderDatasetStudio() : state.view === "jobs" ? renderJobs() : state.view === "tagger" ? renderTagger() : renderDashboard()}</div>
+      <div class="content">${state.view === "agent" ? renderAgentAutopilot() : state.view === "dataset" ? renderDatasetStudio() : state.view === "jobs" ? renderJobs() : state.view === "tagger" ? renderTagger() : renderDashboard()}</div>
     </main>`;
   bindEvents();
 }
@@ -588,6 +785,36 @@ function syncTaggerControls(): void {
   state.tagger.mode = textValue("tagger-mode") === "overwrite" ? "overwrite" : "merge";
 }
 
+function applyAgentProviderDefaults(providerId: string): void {
+  const provider = agentProviders().find((item) => item.id === providerId);
+  if (!provider) return;
+  state.agent.provider = provider.id;
+  state.agent.model = provider.model || provider.defaultModel || state.agent.model;
+  state.agent.baseUrl = provider.baseUrl || provider.defaultBaseUrl || "";
+  state.agent.apiKeyEnv = provider.apiKeyEnv || "";
+}
+
+function syncAgentControls(): void {
+  state.agent.sourceRoot = textValue("agent-source-root").trim();
+  state.agent.jobName = textValue("agent-job-name").trim();
+  state.agent.goal = textValue("agent-goal").trim();
+  const intent = textValue("agent-intent");
+  if (["character", "style", "concept"].includes(intent)) state.agent.intent = intent as any;
+  state.agent.triggerTag = textValue("agent-trigger-tag").trim();
+  state.agent.provider = textValue("agent-provider") || state.agent.provider;
+  state.agent.model = textValue("agent-model").trim();
+  state.agent.baseUrl = textValue("agent-base-url").trim();
+  state.agent.apiKeyEnv = textValue("agent-api-key-env").trim();
+  state.agent.architecture = textValue("agent-architecture") || "anima";
+  state.agent.engineId = textValue("agent-engine-id") || state.settings?.defaultEngineId || "";
+  state.agent.gpuIds = textValue("agent-gpu-ids").trim() || "0";
+  state.agent.multiGpuMode = textValue("agent-multi-gpu-mode") || "single";
+  state.agent.imageMaxSide = Math.max(512, numberValue("agent-image-max-side", 1536));
+  const outputFormat = textValue("agent-output-format");
+  if (["keep", "png", "jpg"].includes(outputFormat)) state.agent.outputFormat = outputFormat as any;
+  state.agent.callModel = Boolean(document.querySelector<HTMLInputElement>("#agent-call-model")?.checked);
+}
+
 function bindEvents(): void {
   document.querySelectorAll<HTMLElement>("[data-view]").forEach((element) => element.addEventListener("click", () => {
     const view = element.dataset.view as ViewId;
@@ -595,6 +822,16 @@ function bindEvents(): void {
     render();
   }));
   document.querySelector("#refresh-health")?.addEventListener("click", () => void loadInitial());
+  document.querySelector("#choose-agent-source")?.addEventListener("click", () => void chooseAgentSourceRoot());
+  document.querySelector("#build-agent-plan")?.addEventListener("click", () => { syncAgentControls(); void buildAgentPlan(); });
+  document.querySelector("#agent-provider")?.addEventListener("change", () => {
+    applyAgentProviderDefaults(textValue("agent-provider"));
+    render();
+  });
+  document.querySelector("#open-agent-job")?.addEventListener("click", () => void openAgentJob());
+  document.querySelector("#start-agent-preprocess")?.addEventListener("click", () => void startAgentPlan("preprocess"));
+  document.querySelector("#start-agent-tagger")?.addEventListener("click", () => void startAgentPlan("tagger"));
+  document.querySelector("#start-agent-train")?.addEventListener("click", () => void startAgentPlan("train"));
   document.querySelector("#choose-dataset-root")?.addEventListener("click", () => void chooseDatasetRoot());
   document.querySelector("#scan-dataset")?.addEventListener("click", () => { syncDatasetControls(); void scanDataset(); });
   document.querySelector("#reload-dataset")?.addEventListener("click", () => void scanDataset());
@@ -638,7 +875,20 @@ async function loadInitial(): Promise<void> {
     const [settings, health] = await Promise.all([bridgeData<Settings>("settings_get"), bridgeData<HealthData>("health_check")]);
     state.settings = settings;
     state.tagger.modelDir = settings.taggerModelDir || state.tagger.modelDir;
+    state.agent.provider = settings.agent?.provider || state.agent.provider;
+    state.agent.model = settings.agent?.model || state.agent.model;
+    state.agent.baseUrl = settings.agent?.baseUrl || state.agent.baseUrl;
+    state.agent.apiKeyEnv = settings.agent?.apiKeyEnv || state.agent.apiKeyEnv;
+    state.agent.imageMaxSide = Number(settings.agent?.imageMaxSide || state.agent.imageMaxSide);
+    if (["keep", "png", "jpg"].includes(String(settings.agent?.outputFormat || ""))) state.agent.outputFormat = settings.agent?.outputFormat as any;
+    state.agent.engineId = settings.defaultEngineId || state.agent.engineId;
+    state.agent.architecture = String(settings.defaults?.architecture || state.agent.architecture);
+    state.agent.gpuIds = String(settings.defaults?.gpuIds || state.agent.gpuIds);
+    state.agent.multiGpuMode = String(settings.defaults?.multiGpuMode || state.agent.multiGpuMode);
     state.health = health;
+    if (!state.agent.model || !state.agent.apiKeyEnv || !state.agent.baseUrl) {
+      applyAgentProviderDefaults(state.agent.provider);
+    }
     state.healthError = undefined;
     await Promise.all([loadJobs(), loadTaggerStatus()]);
   } catch (error) {
@@ -647,6 +897,72 @@ async function loadInitial(): Promise<void> {
     state.healthLoading = false;
     render();
   }
+}
+
+async function chooseAgentSourceRoot(): Promise<void> {
+  const result = await open({ directory: true, multiple: false, title: "Select source image folder" });
+  if (typeof result !== "string") return;
+  state.agent.sourceRoot = result;
+  if (!state.agent.jobName) {
+    state.agent.jobName = (result.split(/[\\/]/).pop() || "autopilot_lora").replaceAll(" ", "_");
+  }
+  state.dataset.root = result;
+  state.tagger.datasetRoot = result;
+  render();
+}
+
+async function buildAgentPlan(): Promise<void> {
+  if (!state.agent.sourceRoot) return;
+  state.agent.loading = true;
+  state.agent.error = undefined;
+  state.agent.message = undefined;
+  render();
+  try {
+    const result = await bridgeData<AgentAutopilotResult>("agent_autopilot_plan", {
+      sourceRoot: state.agent.sourceRoot,
+      jobName: state.agent.jobName || undefined,
+      goal: state.agent.goal,
+      intent: state.agent.intent,
+      triggerTag: state.agent.triggerTag,
+      provider: state.agent.provider,
+      model: state.agent.model,
+      baseUrl: state.agent.baseUrl,
+      apiKeyEnv: state.agent.apiKeyEnv,
+      architecture: state.agent.architecture,
+      engineId: state.agent.engineId,
+      gpuIds: state.agent.gpuIds,
+      multiGpuMode: state.agent.multiGpuMode,
+      imageMaxSide: state.agent.imageMaxSide,
+      outputFormat: state.agent.outputFormat,
+      callModel: state.agent.callModel,
+    });
+    state.agent.result = result;
+    state.agent.jobName = result.job.name;
+    state.agent.message = `Generated ${result.job.name}.`;
+    state.plans.agentPreprocess = result.preprocessPlan;
+    state.plans.agentTagger = result.taggerPlan;
+    state.plans.agentTrain = result.trainPlan;
+    await loadJobs();
+  } catch (error) {
+    state.agent.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    state.agent.loading = false;
+    render();
+  }
+}
+
+async function openAgentJob(): Promise<void> {
+  const jobName = state.agent.result?.job?.name;
+  if (!jobName) return;
+  await selectJob(jobName);
+  state.view = "jobs";
+  render();
+}
+
+async function startAgentPlan(kind: "preprocess" | "tagger" | "train"): Promise<void> {
+  const plan = kind === "preprocess" ? state.agent.result?.preprocessPlan : kind === "tagger" ? state.agent.result?.taggerPlan : state.agent.result?.trainPlan;
+  if (!plan) return;
+  await startProcess(plan);
 }
 
 async function chooseDatasetRoot(): Promise<void> {

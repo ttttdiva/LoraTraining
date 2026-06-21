@@ -369,6 +369,16 @@ h3 {
   grid-template-columns: minmax(360px, 0.42fr) minmax(0, 1fr);
 }
 
+.provider-table {
+  margin-top: 14px;
+}
+
+.json-box {
+  max-height: 520px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .metrics {
   margin-top: 14px;
 }

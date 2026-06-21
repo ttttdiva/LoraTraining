@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 const MAX_LOG_LINES: usize = 5_000;
 const BRIDGE_INIT: &str = include_str!("../../../../python/lora_training_gui/__init__.py");
 const BRIDGE_MAIN: &str = include_str!("../../../../python/lora_training_gui/bridge.py");
+const AUTOPILOT: &str = include_str!("../../../../python/lora_training_gui/autopilot.py");
 const WD14_TAGGER: &str = include_str!("../../../../python/lora_training_gui/wd14_tagger.py");
 
 #[derive(Default)]
@@ -85,6 +86,7 @@ fn bundled_runtime_root() -> PathBuf {
 fn ensure_bundled_python(root: &PathBuf) -> std::io::Result<()> {
     write_embedded_file(root.join("python/lora_training_gui/__init__.py"), BRIDGE_INIT)?;
     write_embedded_file(root.join("python/lora_training_gui/bridge.py"), BRIDGE_MAIN)?;
+    write_embedded_file(root.join("python/lora_training_gui/autopilot.py"), AUTOPILOT)?;
     write_embedded_file(root.join("python/lora_training_gui/wd14_tagger.py"), WD14_TAGGER)?;
     Ok(())
 }
