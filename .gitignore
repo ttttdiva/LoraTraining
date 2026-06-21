@@ -1,0 +1,55 @@
+# Node / frontend
+node_modules/
+dist/
+build/
+.vite/
+.next/
+coverage/
+*.tsbuildinfo
+!packages/desktop/dist/
+packages/desktop/dist/*
+!packages/desktop/dist/.gitkeep
+
+# Tauri / Rust
+target/
+**/src-tauri/target/
+**/src-tauri/gen/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+# Local app data and generated training artifacts
+data/
+jobs/
+runs/
+output/
+outputs/
+logs/
+samples/
+checkpoints/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.local.json
+*.local.toml
+wandb/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
