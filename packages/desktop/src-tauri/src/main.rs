@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::io::{BufRead, BufReader, Read};
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -148,12 +148,41 @@ fn push_log(logs: &Arc<Mutex<VecDeque<String>>>, line: String) {
     }
 }
 
-fn spawn_log_reader<R: Read + Send + 'static>(reader: R, logs: Arc<Mutex<VecDeque<String>>>, prefix: &'static str) {
+fn push_log_bytes(logs: &Arc<Mutex<VecDeque<String>>>, line: &mut Vec<u8>, prefix: &'static str) {
+    if line.is_empty() {
+        return;
+    }
+    let text = String::from_utf8_lossy(line).trim().to_string();
+    line.clear();
+    if text.is_empty() {
+        return;
+    }
+    push_log(logs, format!("{prefix}{text}"));
+}
+
+fn spawn_log_reader<R: Read + Send + 'static>(mut reader: R, logs: Arc<Mutex<VecDeque<String>>>, prefix: &'static str) {
     std::thread::spawn(move || {
-        let reader = BufReader::new(reader);
-        for line in reader.lines().map_while(Result::ok) {
-            push_log(&logs, format!("{prefix}{line}"));
+        let mut buffer = [0_u8; 4096];
+        let mut line = Vec::new();
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(size) => {
+                    for byte in &buffer[..size] {
+                        if *byte == b'\n' || *byte == b'\r' {
+                            push_log_bytes(&logs, &mut line, prefix);
+                        } else {
+                            line.push(*byte);
+                            if line.len() >= 8192 {
+                                push_log_bytes(&logs, &mut line, prefix);
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
         }
+        push_log_bytes(&logs, &mut line, prefix);
     });
 }
 

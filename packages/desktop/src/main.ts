@@ -115,6 +115,8 @@ type ProcessStatus = {
   logs: string[];
 };
 type ProcessEnvelope = { id: string; status: ProcessStatus };
+type JobContextMenu = { jobName: string; x: number; y: number };
+type TrainingMetric = { index: number; step?: number; epoch?: number; loss: number; lr?: number; raw: string };
 
 type ViewId = "dashboard" | "agent" | "dataset" | "jobs" | "tagger";
 
@@ -160,6 +162,7 @@ const state: {
   jobs: JobSummary[];
   selectedJobName?: string;
   jobDraft?: Job;
+  jobContextMenu?: JobContextMenu;
   jobMessage?: string;
   jobError?: string;
   plans: Record<string, LaunchPlan | undefined>;
@@ -282,6 +285,10 @@ function planCommand(plan?: LaunchPlan): string {
   if (!plan) return "";
   const record = plan.runRecordPath ? `\n\nRun record: ${plan.runRecordPath}` : "";
   return `${plan.displayCommand}${record}`;
+}
+
+function imageSrc(path: string): string {
+  return convertFileSrc(path, "asset");
 }
 
 function getPath(obj: any, path: string, fallback: unknown = ""): any {
@@ -443,7 +450,7 @@ function renderDatasetStudio(): string {
             ${scan.items.map((item) => {
               const issues = item.issues.length ? item.issues.map((issue) => `<span class="issue-pill">${escapeHtml(issue)}</span>`).join("") : `<span class="issue-pill issue-ok">ok</span>`;
               return `<button class="dataset-row ${item.imagePath === d.selectedImagePath ? "selected" : ""}" type="button" data-image-path="${escapeHtml(item.imagePath)}">
-                <img src="${escapeHtml(convertFileSrc(item.imagePath))}" alt="" loading="lazy">
+                <img src="${escapeHtml(imageSrc(item.imagePath))}" alt="" loading="lazy">
                 <span class="dataset-row-main"><strong>${escapeHtml(item.relativePath)}</strong><span>${escapeHtml(imageSizeLabel(item))} / ${item.tagCount} tags</span><span class="issue-list">${issues}</span></span>
               </button>`;
             }).join("")}
@@ -452,7 +459,7 @@ function renderDatasetStudio(): string {
         <section class="panel editor-panel">
           ${selected ? `
             <div class="section-title"><div><h2>Caption Editor</h2><p class="muted mono">${escapeHtml(selected.captionPath)}</p></div>${statusPill(selected.captionExists, "Exists", "Will create")}</div>
-            <div class="preview-block"><img src="${escapeHtml(convertFileSrc(selected.imagePath))}" alt=""><dl class="details"><div><dt>Image</dt><dd>${escapeHtml(selected.relativePath)}</dd></div><div><dt>Size</dt><dd>${escapeHtml(imageSizeLabel(selected))}</dd></div><div><dt>Tags</dt><dd>${selected.tagCount}</dd></div></dl></div>
+            <div class="preview-block"><img src="${escapeHtml(imageSrc(selected.imagePath))}" alt=""><dl class="details"><div><dt>Image</dt><dd>${escapeHtml(selected.relativePath)}</dd></div><div><dt>Size</dt><dd>${escapeHtml(imageSizeLabel(selected))}</dd></div><div><dt>Tags</dt><dd>${selected.tagCount}</dd></div></dl></div>
             <textarea id="caption-editor" spellcheck="false">${escapeHtml(d.draftCaption)}</textarea>
             <div class="action-row"><button class="primary-button" id="save-caption" type="button">Save Caption</button><button class="secondary-button" id="reload-dataset" type="button">Rescan</button></div>
           ` : `<h2>Caption Editor</h2><p class="muted">Select an image.</p>`}
@@ -480,6 +487,78 @@ function select(path: string, label: string, values: string[]): string {
 function textarea(path: string, label: string, placeholder = ""): string {
   const value = getPath(state.jobDraft, path, "");
   return `<label class="textarea-label">${label}<textarea data-job-field="${path}" placeholder="${escapeHtml(placeholder)}">${escapeHtml(value)}</textarea></label>`;
+}
+
+function parseNumberToken(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function extractTrainingMetrics(logs: string[] = []): TrainingMetric[] {
+  const metrics: TrainingMetric[] = [];
+  const lossPattern = /(?:^|[\s,{[(])(?:train[_/-]?loss|avg[_/-]?loss|loss)\s*[=:]\s*([-+]?\d*\.?\d+(?:e[-+]?\d+)?)/i;
+  const lrPattern = /(?:^|[\s,{[(])(?:learning[_-]?rate|lr)\s*[=:]\s*([-+]?\d*\.?\d+(?:e[-+]?\d+)?)/i;
+  const stepPattern = /(?:global[_-]?step|step)\s*[=:]\s*(\d+)/i;
+  const progressPattern = /(?:^|\s)(\d+)\s*\/\s*(\d+)(?:\s|$)/;
+  const epochPattern = /epoch\s*[=:]?\s*([-+]?\d*\.?\d+)/i;
+
+  logs.forEach((raw, index) => {
+    const line = raw.replace(/^ERR:\s*/, "").trim();
+    const loss = parseNumberToken(line.match(lossPattern)?.[1]);
+    if (loss === undefined) return;
+    const lr = parseNumberToken(line.match(lrPattern)?.[1]);
+    const step = parseNumberToken(line.match(stepPattern)?.[1]) ?? parseNumberToken(line.match(progressPattern)?.[1]);
+    const epoch = parseNumberToken(line.match(epochPattern)?.[1]);
+    metrics.push({ index, step, epoch, loss, lr, raw });
+  });
+
+  return metrics.slice(-240);
+}
+
+function metricPoints(values: number[], width: number, height: number, padding: number): string {
+  if (!values.length) return "";
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || Math.max(Math.abs(max), 1);
+  return values.map((value, index) => {
+    const x = padding + (values.length === 1 ? 0 : (index / (values.length - 1)) * (width - padding * 2));
+    const y = height - padding - ((value - min) / span) * (height - padding * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function renderTrainingMetrics(processId: string): string {
+  const process = state.processes[processId];
+  const metrics = extractTrainingMetrics(process?.logs || []);
+  if (!metrics.length) {
+    return `<div class="metrics-panel empty"><p class="muted">No loss values parsed yet. Training logs and TensorBoard are still available below.</p></div>`;
+  }
+
+  const latest = metrics[metrics.length - 1];
+  const values = metrics.map((item) => item.loss);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const chartWidth = 520;
+  const chartHeight = 150;
+  const points = metricPoints(values, chartWidth, chartHeight, 16);
+  const stepLabel = latest.step !== undefined ? `step ${latest.step}` : `log ${latest.index + 1}`;
+  const lrLabel = latest.lr !== undefined ? latest.lr.toExponential(2) : "-";
+
+  return `
+    <div class="metrics-panel">
+      <dl class="metric-strip">
+        <div><dt>Loss</dt><dd>${latest.loss.toFixed(5)}</dd></div>
+        <div><dt>Min</dt><dd>${min.toFixed(5)}</dd></div>
+        <div><dt>Max</dt><dd>${max.toFixed(5)}</dd></div>
+        <div><dt>LR</dt><dd>${escapeHtml(lrLabel)}</dd></div>
+        <div><dt>Point</dt><dd>${escapeHtml(stepLabel)}</dd></div>
+      </dl>
+      <svg class="metric-chart" viewBox="0 0 ${chartWidth} ${chartHeight}" role="img" aria-label="Training loss chart" preserveAspectRatio="none">
+        <line x1="16" y1="${chartHeight - 16}" x2="${chartWidth - 16}" y2="${chartHeight - 16}"></line>
+        <polyline points="${points}"></polyline>
+      </svg>
+    </div>`;
 }
 
 function renderLogs(processId: string): string {
@@ -577,7 +656,7 @@ function renderAgentAutopilot(): string {
       </section>
       <section class="grid two">
         <article class="panel"><h2>Preprocess / Tagger Plans</h2>${result.preprocessPlan ? `<pre>${escapeHtml(planCommand(result.preprocessPlan))}</pre>` : ""}${result.taggerPlan ? `<pre>${escapeHtml(planCommand(result.taggerPlan))}</pre>` : ""}${renderLogs(preprocessId)}${renderLogs(taggerId)}</article>
-        <article class="panel"><h2>Training Plan</h2>${result.trainPlan ? `<pre>${escapeHtml(planCommand(result.trainPlan))}</pre>` : ""}${renderLogs(trainId)}</article>
+        <article class="panel"><h2>Training Plan</h2>${result.trainPlan ? `<pre>${escapeHtml(planCommand(result.trainPlan))}</pre>` : ""}${renderTrainingMetrics(trainId)}${renderLogs(trainId)}</article>
       </section>
     ` : `<section class="panel"><p class="muted">No Autopilot plan yet.</p></section>`}`;
 }
@@ -668,10 +747,25 @@ function renderJobEditor(): string {
         <button class="secondary-button" id="start-sample" type="button" ${state.plans.sample ? "" : "disabled"}>Generate Sample</button>
       </div>
       <div class="grid two">
-        <div><h3>Training</h3>${state.plans.train ? `<pre>${escapeHtml(state.plans.train.displayCommand)}</pre>` : ""}${renderLogs(trainId)}</div>
+        <div><h3>Training</h3>${state.plans.train ? `<pre>${escapeHtml(state.plans.train.displayCommand)}</pre>` : ""}${renderTrainingMetrics(trainId)}${renderLogs(trainId)}</div>
         <div><h3>TensorBoard / Sample</h3>${state.plans.tensorboard ? `<pre>${escapeHtml(state.plans.tensorboard.displayCommand)}</pre>` : ""}${state.plans.sample ? `<pre>${escapeHtml(state.plans.sample.displayCommand)}</pre>` : ""}${renderLogs(tbId)}${renderLogs(sampleId)}</div>
       </div>
     </section>`;
+}
+
+function renderJobContextMenu(): string {
+  const menu = state.jobContextMenu;
+  if (!menu) return "";
+  const left = Math.max(8, Math.min(menu.x, window.innerWidth - 220));
+  const top = Math.max(8, Math.min(menu.y, window.innerHeight - 190));
+  const jobName = escapeHtml(menu.jobName);
+  return `
+    <div class="context-menu" style="left: ${left}px; top: ${top}px;" role="menu" aria-label="Job actions">
+      <button type="button" role="menuitem" data-job-action="open" data-job-name="${jobName}">Open</button>
+      <button type="button" role="menuitem" data-job-action="rename" data-job-name="${jobName}">Rename F2</button>
+      <button type="button" role="menuitem" data-job-action="clone" data-job-name="${jobName}">Clone</button>
+      <button type="button" role="menuitem" class="danger-menu-item" data-job-action="delete" data-job-name="${jobName}">Delete</button>
+    </div>`;
 }
 
 function renderJobs(): string {
@@ -683,10 +777,11 @@ function renderJobs(): string {
     <section class="jobs-layout">
       <div class="panel job-list-panel">
         <div class="section-title"><h2>Jobs</h2><button class="secondary-button" id="reload-jobs" type="button">Reload</button></div>
-        <div class="job-list">${state.jobs.map((job) => `<button class="job-row ${job.name === state.selectedJobName ? "selected" : ""}" data-job-name="${escapeHtml(job.name)}" type="button"><strong>${escapeHtml(job.displayName)}</strong><span>${escapeHtml(job.datasetImageDir || "no dataset")}</span><span class="mono">${escapeHtml(job.updatedAt || "")}</span></button>`).join("")}</div>
+        <div class="job-list">${state.jobs.map((job) => `<button class="job-row ${job.name === state.selectedJobName ? "selected" : ""}" data-job-name="${escapeHtml(job.name)}" type="button" title="Right-click for job actions. F2 renames the selected job."><strong>${escapeHtml(job.displayName)}</strong><span>${escapeHtml(job.datasetImageDir || "no dataset")}</span><span class="mono">${escapeHtml(job.updatedAt || "")}</span></button>`).join("")}</div>
       </div>
       ${renderJobEditor()}
-    </section>`;
+    </section>
+    ${renderJobContextMenu()}`;
 }
 
 function renderTagger(): string {
@@ -847,7 +942,19 @@ function bindEvents(): void {
   document.querySelector("#apply-bulk-operation")?.addEventListener("click", () => { syncBulkControls(); void applyBulkOperation(); });
   document.querySelector("#create-job")?.addEventListener("click", () => void createJob());
   document.querySelector("#reload-jobs")?.addEventListener("click", () => void loadJobs());
-  document.querySelectorAll<HTMLButtonElement>(".job-row").forEach((button) => button.addEventListener("click", () => void selectJob(button.dataset.jobName || "")));
+  document.querySelectorAll<HTMLButtonElement>(".job-row").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.jobContextMenu = undefined;
+      void selectJob(button.dataset.jobName || "");
+    });
+    button.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      void openJobContextMenu(button.dataset.jobName || "", event.clientX, event.clientY);
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-job-action]").forEach((button) => {
+    button.addEventListener("click", () => void runJobMenuAction(button.dataset.jobAction || "", button.dataset.jobName || ""));
+  });
   document.querySelector("#save-job")?.addEventListener("click", () => { syncJobDraft(); void saveJob(); });
   document.querySelector("#build-job-files")?.addEventListener("click", () => { syncJobDraft(); void buildJobFiles(); });
   document.querySelector("#clone-job")?.addEventListener("click", () => { syncJobDraft(); void cloneJob(); });
@@ -866,6 +973,37 @@ function bindEvents(): void {
   document.querySelector("#tagger-model-dir")?.addEventListener("change", () => { syncTaggerControls(); void persistTaggerModelDir().then(loadTaggerStatus); });
   document.querySelector("#choose-tagger-root")?.addEventListener("click", () => void chooseTaggerRoot());
   document.querySelector("#run-tagger")?.addEventListener("click", () => { syncTaggerControls(); void runTagger(); });
+  document.onkeydown = handleGlobalKeyDown;
+  document.onclick = handleDocumentClick;
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
+
+function handleGlobalKeyDown(event: KeyboardEvent): void {
+  if (event.key === "Escape" && state.jobContextMenu) {
+    state.jobContextMenu = undefined;
+    render();
+    return;
+  }
+  if (state.view !== "jobs" || isEditableTarget(event.target)) return;
+  if (event.key === "F2" && state.selectedJobName) {
+    event.preventDefault();
+    void renameJob(state.selectedJobName);
+  }
+  if (event.key === "Delete" && state.selectedJobName) {
+    event.preventDefault();
+    void deleteJobByName(state.selectedJobName);
+  }
+}
+
+function handleDocumentClick(event: MouseEvent): void {
+  if (!state.jobContextMenu) return;
+  if (event.target instanceof HTMLElement && event.target.closest(".context-menu, .job-row")) return;
+  state.jobContextMenu = undefined;
+  render();
 }
 
 async function loadInitial(): Promise<void> {
@@ -1031,12 +1169,43 @@ async function createJob(): Promise<void> {
 }
 
 async function selectJob(name: string): Promise<void> {
+  if (!name) return;
   const result = await bridgeData<{ job: Job }>("job_get", { name });
   state.selectedJobName = name;
   state.jobDraft = result.job;
   state.jobMessage = undefined;
   state.jobError = undefined;
   render();
+}
+
+async function openJobContextMenu(name: string, x: number, y: number): Promise<void> {
+  if (!name) return;
+  state.jobContextMenu = { jobName: name, x, y };
+  if (state.selectedJobName !== name || state.jobDraft?.name !== name) {
+    await selectJob(name);
+  }
+  state.jobContextMenu = { jobName: name, x, y };
+  render();
+}
+
+async function runJobMenuAction(action: string, name: string): Promise<void> {
+  if (!name) return;
+  if (action === "open") {
+    state.jobContextMenu = undefined;
+    await selectJob(name);
+    return;
+  }
+  if (action === "rename") {
+    await renameJob(name);
+    return;
+  }
+  if (action === "clone") {
+    await cloneJobByName(name);
+    return;
+  }
+  if (action === "delete") {
+    await deleteJobByName(name);
+  }
 }
 
 async function saveJob(): Promise<void> {
@@ -1059,21 +1228,76 @@ async function buildJobFiles(): Promise<void> {
 
 async function cloneJob(): Promise<void> {
   if (!state.jobDraft) return;
-  const target = `${state.jobDraft.name}_copy`;
-  const result = await bridgeData<{ job: Job }>("job_clone", { source: state.jobDraft.name, target });
-  state.jobDraft = result.job;
-  state.selectedJobName = result.job.name;
-  await loadJobs();
-  render();
+  await cloneJobByName(state.jobDraft.name);
 }
 
 async function deleteJob(): Promise<void> {
-  if (!state.jobDraft) return;
-  await bridgeData("job_delete", { name: state.jobDraft.name });
-  state.jobDraft = undefined;
-  state.selectedJobName = undefined;
-  await loadJobs();
-  render();
+  await deleteJobByName(state.jobDraft?.name);
+}
+
+async function cloneJobByName(source: string): Promise<void> {
+  if (!source) return;
+  try {
+    const target = `${source}_copy`;
+    const result = await bridgeData<{ job: Job }>("job_clone", { source, target });
+    state.jobDraft = result.job;
+    state.selectedJobName = result.job.name;
+    state.jobContextMenu = undefined;
+    state.jobMessage = `Cloned ${source}.`;
+    state.jobError = undefined;
+    await loadJobs();
+  } catch (error) {
+    state.jobError = error instanceof Error ? error.message : String(error);
+  } finally {
+    render();
+  }
+}
+
+async function renameJob(source: string): Promise<void> {
+  if (!source) return;
+  const target = window.prompt("Rename job", source)?.trim();
+  if (!target || target === source) {
+    state.jobContextMenu = undefined;
+    render();
+    return;
+  }
+  try {
+    const result = await bridgeData<{ job: Job }>("job_rename", { source, target });
+    state.jobDraft = result.job;
+    state.selectedJobName = result.job.name;
+    state.jobContextMenu = undefined;
+    state.jobMessage = `Renamed to ${result.job.name}.`;
+    state.jobError = undefined;
+    await loadJobs();
+  } catch (error) {
+    state.jobError = error instanceof Error ? error.message : String(error);
+  } finally {
+    render();
+  }
+}
+
+async function deleteJobByName(name?: string): Promise<void> {
+  if (!name) return;
+  if (!window.confirm(`Delete job "${name}"?`)) {
+    state.jobContextMenu = undefined;
+    render();
+    return;
+  }
+  try {
+    await bridgeData("job_delete", { name });
+    if (state.selectedJobName === name) {
+      state.jobDraft = undefined;
+      state.selectedJobName = undefined;
+    }
+    state.jobContextMenu = undefined;
+    state.jobMessage = `Deleted ${name}.`;
+    state.jobError = undefined;
+    await loadJobs();
+  } catch (error) {
+    state.jobError = error instanceof Error ? error.message : String(error);
+  } finally {
+    render();
+  }
 }
 
 async function planTrain(): Promise<void> {

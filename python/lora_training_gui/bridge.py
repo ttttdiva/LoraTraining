@@ -703,11 +703,41 @@ def job_clone(payload: dict[str, Any]) -> dict[str, Any]:
     return success("job_clone", {"job": saved, "path": str(job_dir(saved["name"], settings))})
 
 
+def job_rename(payload: dict[str, Any]) -> dict[str, Any]:
+    source = str(payload.get("source") or "").strip()
+    target = sanitize_name(str(payload.get("target") or "").strip())
+    if not source:
+        return failure("job_rename", ["source is required"])
+    if not target:
+        return failure("job_rename", ["target is required"])
+    settings = load_settings_dict()
+    source_dir = job_dir(source, settings)
+    target_dir = job_dir(target, settings)
+    if not source_dir.exists():
+        return failure("job_rename", [f"job not found: {source}"])
+    if source_dir.resolve() == target_dir.resolve():
+        job = load_job_dict(source, settings)
+        return success("job_rename", {"job": job, "path": str(source_dir)})
+    if target_dir.exists():
+        return failure("job_rename", [f"target job already exists: {target}"])
+    job = load_job_dict(source, settings)
+    previous_name = job.get("name", source)
+    job["name"] = target
+    job["displayName"] = target
+    training = job.get("training", {})
+    if isinstance(training, dict) and training.get("outputName") in {previous_name, source, ""}:
+        training["outputName"] = target
+    source_dir.rename(target_dir)
+    saved = save_job_dict(job, settings)
+    return success("job_rename", {"job": saved, "path": str(job_dir(saved["name"], settings))})
+
+
 def job_delete(payload: dict[str, Any]) -> dict[str, Any]:
     name = str(payload.get("name") or "").strip()
     if not name:
         return failure("job_delete", ["name is required"])
-    target = job_dir(name)
+    settings = load_settings_dict()
+    target = job_dir(name, settings)
     if target.exists():
         shutil.rmtree(target)
     return success("job_delete", {"deleted": name})
@@ -2556,6 +2586,7 @@ JOBS = {
     "job_get": job_get,
     "job_save": job_save,
     "job_clone": job_clone,
+    "job_rename": job_rename,
     "job_delete": job_delete,
     "job_build_files": job_build_files,
     "train_launch_plan": train_launch_plan,

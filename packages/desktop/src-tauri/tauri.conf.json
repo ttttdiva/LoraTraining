@@ -7,7 +7,7 @@
   },
   "package": {
     "productName": "LoraTraining",
-    "version": "0.1.6"
+    "version": "0.1.7"
   },
   "tauri": {
     "allowlist": {
@@ -15,12 +15,18 @@
       "dialog": {
         "open": true
       },
+      "protocol": {
+        "asset": true,
+        "assetScope": [
+          "**"
+        ]
+      },
       "shell": {
         "open": true
       }
     },
     "bundle": {
-      "active": true,
+      "active": false,
       "targets": "all",
       "identifier": "local.loratraining.gui",
       "icon": [
