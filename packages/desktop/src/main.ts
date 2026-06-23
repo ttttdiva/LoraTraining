@@ -738,7 +738,7 @@ function renderDatasetStudio(): string {
         <button class="danger-button" id="forget-dataset-profile" type="button" ${profile ? "" : "disabled"}>Forget</button>
       </div>
       <div class="form-grid dataset-controls">
-        <label>Dataset root<input id="dataset-root" value="${escapeHtml(d.root)}" placeholder="D:\\datasets\\my_lora"></label>
+        <label>Dataset root<input id="dataset-root" value="${escapeHtml(d.root)}" placeholder="data/datasets/my_lora"></label>
         <label>Caption extension<input id="caption-extension" value="${escapeHtml(d.captionExtension)}"></label>
         <label>Low-res threshold pixels<input id="min-pixels" type="number" min="0" step="1" value="${d.minPixels}"></label>
       </div>
@@ -903,7 +903,7 @@ function renderAgentAutopilot(): string {
       <article class="panel">
         <div class="section-title"><h2>Input</h2>${provider ? statusPill(provider.available, "Provider OK", "Provider Check") : ""}</div>
         <div class="form-grid">
-          <label>Source images<input id="agent-source-root" value="${escapeHtml(a.sourceRoot)}" placeholder="D:\\datasets\\raw_images"></label>
+          <label>Source images<input id="agent-source-root" value="${escapeHtml(a.sourceRoot)}" placeholder="data/datasets/raw_images"></label>
           <label>Job name<input id="agent-job-name" value="${escapeHtml(a.jobName)}" placeholder="my_lora_agent"></label>
           <label>Intent<select id="agent-intent">
             ${["character", "style", "concept"].map((item) => `<option value="${item}" ${a.intent === item ? "selected" : ""}>${item}</option>`).join("")}

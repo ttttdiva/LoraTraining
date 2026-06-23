@@ -9,7 +9,7 @@
    - jobs root、既定エンジン、UI、ログ保持、WanDB既定値。
 
 2. Engine profile
-   - 外部学習エンジンの場所と能力。
+   - 同梱学習エンジンの場所と能力。
    - venv、Python、対応モデル系列、対応multi-GPUモード。
 
 3. Job config
@@ -31,7 +31,7 @@
 
 ```json
 {
-  "jobsRoot": "D:\\LoraTraining\\jobs",
+  "jobsRoot": "data/jobs",
   "defaultEngineId": "anima-standalone-local",
   "ui": {
     "theme": "system",
@@ -52,12 +52,12 @@
 
 ```json
 {
-  "id": "anima-standalone-local",
+  "id": "anima-standalone",
   "type": "anima_standalone",
-  "name": "Anima Standalone Trainer",
-  "root": "D:\\tool\\lora_trainer\\Anima-Standalone-Trainer",
-  "venv": "D:\\tool\\lora_trainer\\Anima-Standalone-Trainer\\venv",
-  "python": "D:\\tool\\lora_trainer\\Anima-Standalone-Trainer\\venv\\Scripts\\python.exe",
+  "name": "Bundled Anima Trainer",
+  "root": "engines/sd-scripts",
+  "venv": "engines/sd-scripts/venv",
+  "python": "engines/sd-scripts/venv/Scripts/python.exe",
   "capabilities": {
     "models": ["anima", "lumina"],
     "multiGpuModes": ["single", "ddp", "fsdp", "fsdp2", "deepspeed", "tp_sp"],
@@ -79,12 +79,12 @@
 {
   "schemaVersion": 1,
   "name": "my_anima_lora",
-  "engineId": "anima-standalone-local",
+  "engineId": "anima-standalone",
   "architecture": "anima",
   "modelPaths": {
-    "ditPath": "D:\\models\\anima-preview.safetensors",
-    "qwen3Path": "D:\\models\\qwen_3_06b_base.safetensors",
-    "vaePath": "D:\\models\\qwen_image_vae.safetensors"
+    "ditPath": "models/anima-preview.safetensors",
+    "qwen3Path": "models/qwen_3_06b_base.safetensors",
+    "vaePath": "models/qwen_image_vae.safetensors"
   },
   "dataset": {
     "configPath": "dataset.toml",
@@ -207,7 +207,7 @@ run recordは再現性のために必ず保存する。
   "gpuIds": ["0", "1"],
   "multiGpuMode": "fsdp2",
   "launch": {
-    "cwd": "D:\\tool\\lora_trainer\\Anima-Standalone-Trainer",
+    "cwd": "engines/sd-scripts",
     "scriptPath": "launch.ps1",
     "mergedConfigPath": "merged_config.toml"
   },

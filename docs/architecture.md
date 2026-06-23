@@ -2,7 +2,7 @@
 
 ## 結論
 
-Tauriデスクトップアプリを本体にし、学習エンジンは外部プロセスとして扱う。
+Tauriデスクトップアプリを本体にし、同梱学習エンジンを子プロセスとして扱う。
 
 Tauri/RustはOS統合、プロセス管理、ファイル選択、ログストリームを担当する。Python bridgeは学習ドメインの処理、TOML生成、dataset操作、engine adapterを担当する。TypeScript UIは状態編集と可視化に集中する。
 
@@ -13,7 +13,7 @@ flowchart LR
   UI["Tauri UI\nTypeScript"]
   Rust["Tauri Commands\nRust"]
   Bridge["Python Bridge\nengine/dataset/jobs"]
-  Engines["External Engines\nsd-scripts / Anima Standalone"]
+  Engines["Bundled Engine\nengines/sd-scripts"]
   Files["Workspace Files\njobs/config/logs/output"]
   GPU["System Tools\nnvidia-smi / tensorboard / wandb"]
 
@@ -56,7 +56,7 @@ Tauri/Rustの責務:
 - 長時間プロセスの開始、停止、ログ転送。
 - ファイル/フォルダ選択。
 - OS通知。
-- 外部フォルダを開く。
+- フォルダを開く。
 - 動的ポート検出。
 
 テンプレートのPython bridge方式を拡張し、短時間ジョブと長時間ジョブを分ける。
@@ -76,24 +76,20 @@ Tauri/Rustの責務:
 - ログパース。
 - GPU/環境診断補助。
 
-Python側は外部エンジンと同じPython依存を使えるため、TOML、画像処理、tagger、sd-scripts関連の処理を置きやすい。
+Python側は同梱エンジンのPython依存を使えるため、TOML、画像処理、tagger、sd-scripts関連の処理を置きやすい。
 
 ### Engine layer
 
-初期対応候補:
+初期対応:
 
 1. `AnimaStandaloneAdapter`
-   - `D:\tool\lora_trainer\Anima-Standalone-Trainer` を既存rootとして登録できる。
-   - `architectures.json` 的なモデル系列レジストリを利用する。
+   - `engines/sd-scripts` を内部rootとして使う。
+   - Anima向けの学習、サンプル生成、ComfyUI変換を扱う。
    - DDP/FSDP/FSDP2/DeepSpeed/TP-SPを扱う。
 
 2. `SdScriptsAdapter`
    - kohya-ss sd-scripts互換。
-   - Kohya GUIのパラメータ体系を段階的に移植する。
    - SD1/SDXL/Animaなどをモデル系列として分ける。
-
-3. `FactoryImportAdapter`
-   - LoRA Factoryは直接実行基盤というより、既存zipや設定を検出して移行支援する位置づけ。
 
 ## ジョブ実行モデル
 

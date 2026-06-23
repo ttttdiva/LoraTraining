@@ -64,8 +64,8 @@ LoRA学習に必要な準備、設定、実行、監視、サンプル確認を1
 
 ### 6. Environment
 
-- Python、Git、CUDA、NVIDIA driver、Torch、venv、engine rootを検出。
-- 既存 `D:\tool\lora_trainer\` のツールを候補として登録。
+- Python、Git、CUDA、NVIDIA driver、Torch、venv、内部 engine rootを検証。
+- 同梱 `engines/sd-scripts` を built-in engine として登録。
 - エンジンごとのセットアップ、更新、検証を行う。
 
 ### 7. Settings

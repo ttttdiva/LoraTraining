@@ -8,7 +8,7 @@
 
 ## 背景
 
-LoRA学習GUIは、ローカルファイル、外部Python環境、GPU状態、長時間プロセス、画像プレビューを扱う。既存ツールにはブラウザGUI、WinForms GUI、Express UIがあるが、今回の目的では次の問題がある。
+LoRA学習GUIは、ローカルファイル、アプリ管理Python環境、GPU状態、長時間プロセス、画像プレビューを扱う。今回の目的では次の問題がある。
 
 - 固定ポートやブラウザサーバーに依存したくない。
 - sd-scripts級の詳細設定を扱いたい。
@@ -25,15 +25,15 @@ Rust/Tauri commandはOS統合とプロセス制御を担当する。
 
 Python bridgeは学習ドメイン処理を担当する。
 
-外部学習エンジンはengine adapterとして扱い、アプリ本体に巨大な学習コードを持ち込まない。
+学習エンジンは `engines/sd-scripts` に同梱し、Python bridge の engine adapter から呼び出す。
 
 ## 理由
 
 - Tauriなら固定HTTPポートなしでデスクトップGUIにできる。
-- Python bridgeなら既存学習エンジン、TOML、画像処理、taggerと相性が良い。
+- Python bridgeなら学習エンジン、TOML、画像処理、taggerと相性が良い。
 - Rust側でprocess tree、ファイル選択、通知などのOS操作を安全に包める。
 - TypeScript側はフォームと状態管理に集中できる。
-- 既存ツールを丸ごと移植せず、能力だけを取り込める。
+- GUIと学習エンジンを分離しつつ、必要なruntimeコードをリポジトリ内で完結できる。
 
 ## 影響
 

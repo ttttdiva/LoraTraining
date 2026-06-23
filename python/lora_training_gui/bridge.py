@@ -32,12 +32,13 @@ from lora_training_gui.wd14_tagger import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-KNOWN_TOOL_ROOT = Path("D:/tool/lora_trainer")
+INTERNAL_ENGINES_ROOT = PROJECT_ROOT / "engines"
+INTERNAL_SD_SCRIPTS_ROOT = INTERNAL_ENGINES_ROOT / "sd-scripts"
 APP_DATA = PROJECT_ROOT / "data"
 SETTINGS_PATH = APP_DATA / "settings.json"
-DEFAULT_TAGGER_MODEL_DIR = Path("D:/AI/models/Hot/image/Tagger")
-DEFAULT_ENGINE_ROOT = KNOWN_TOOL_ROOT / "Anima-Standalone-Trainer"
-DEFAULT_SD_SCRIPTS_ROOT = KNOWN_TOOL_ROOT / "sd-scripts"
+DEFAULT_TAGGER_MODEL_DIR = APP_DATA / "models" / "wd14"
+DEFAULT_ENGINE_ROOT = INTERNAL_SD_SCRIPTS_ROOT
+DEFAULT_SD_SCRIPTS_ROOT = INTERNAL_SD_SCRIPTS_ROOT
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", "venv", "trash"}
 AGENT_PROVIDER_ALIASES = {
@@ -258,46 +259,30 @@ def detect_engines() -> list[dict[str, Any]]:
     candidates = [
         {
             "id": "anima-standalone",
-            "name": "Anima Standalone Trainer",
+            "name": "Bundled Anima Trainer",
             "type": "anima_standalone",
-            "root": KNOWN_TOOL_ROOT / "Anima-Standalone-Trainer",
-            "required": ["anima_train.py", "training-ui/architectures.json"],
+            "root": INTERNAL_SD_SCRIPTS_ROOT,
+            "required": ["anima_train_network.py", "anima_gen.py", "library", "networks", "requirements.txt"],
             "notes": [
-                "First execution adapter candidate.",
-                "Includes job TOML, multi-GPU, and sample generation references.",
+                "Bundled runtime engine for Anima training and sample generation.",
             ],
         },
         {
             "id": "sd-scripts",
-            "name": "kohya-ss sd-scripts",
+            "name": "Bundled kohya-ss sd-scripts",
             "type": "sd_scripts",
-            "root": KNOWN_TOOL_ROOT / "sd-scripts",
-            "required": ["train_network.py", "sdxl_train_network.py", "library", "networks", "requirements.txt"],
-            "notes": [
-                "Official sd-scripts clone for SD1/SD2/SDXL LoRA execution.",
-                "Used directly as a selectable training engine.",
+            "root": INTERNAL_SD_SCRIPTS_ROOT,
+            "required": [
+                "train_network.py",
+                "sdxl_train_network.py",
+                "gen_img.py",
+                "sdxl_gen_img.py",
+                "library",
+                "networks",
+                "requirements.txt",
             ],
-        },
-        {
-            "id": "kohya-param-gui",
-            "name": "Kohya lora param GUI",
-            "type": "sd_scripts_reference",
-            "root": KNOWN_TOOL_ROOT / "Kohya_lora_param_gui",
-            "required": ["Kohya_lora_trainer/TrainParams.cs", "Kohya_lora_trainer/MyUtils.cs"],
             "notes": [
-                "Source reference for the parameter registry.",
-                "Used as a settings reference rather than a direct execution engine.",
-            ],
-        },
-        {
-            "id": "anima-lora-factory",
-            "name": "Anima LoRA Factory",
-            "type": "workflow_reference",
-            "root": KNOWN_TOOL_ROOT / "Anima-LoRA-Factory",
-            "required": ["README.md"],
-            "notes": [
-                "Reference for onboarding, preprocessing, and tag editing workflow.",
-                "Fixed-port browser GUI behavior will not be copied.",
+                "Bundled runtime engine for SD1/SD2/SDXL LoRA execution.",
             ],
         },
     ]
@@ -360,19 +345,18 @@ def known_anima_venv() -> Path:
 
 
 def default_engines() -> list[dict[str, str]]:
-    sd_scripts_venv = DEFAULT_SD_SCRIPTS_ROOT / "venv"
-    shared_venv = sd_scripts_venv if sd_scripts_venv.exists() else known_anima_venv()
+    shared_venv = DEFAULT_SD_SCRIPTS_ROOT / "venv"
     return [
         {
             "id": "anima-standalone",
-            "name": "Anima Standalone Trainer",
+            "name": "Bundled Anima Trainer",
             "type": "anima_standalone",
             "root": str(DEFAULT_ENGINE_ROOT),
-            "venv": str(known_anima_venv()),
+            "venv": str(shared_venv),
         },
         {
             "id": "sd-scripts",
-            "name": "kohya-ss sd-scripts",
+            "name": "Bundled kohya-ss sd-scripts",
             "type": "sd_scripts",
             "root": str(DEFAULT_SD_SCRIPTS_ROOT),
             "venv": str(shared_venv),
@@ -448,7 +432,7 @@ def merge_engines(stored_engines: Any) -> list[dict[str, Any]]:
             continue
         engine_id = str(engine["id"])
         base = default_by_id.get(engine_id, {})
-        item = {**base, **engine}
+        item = {**engine, **base} if base else engine
         merged.append(item)
         seen.add(engine_id)
 
@@ -471,6 +455,7 @@ def load_settings_dict() -> dict[str, Any]:
             settings["ui"].update(stored["ui"])
         if not isinstance(settings.get("datasets"), list):
             settings["datasets"] = []
+        settings["taggerModelDir"] = str(DEFAULT_TAGGER_MODEL_DIR)
         settings["engines"] = merge_engines(stored.get("engines"))
     return settings
 
@@ -485,6 +470,7 @@ def save_settings_dict(settings: dict[str, Any]) -> dict[str, Any]:
     if isinstance(settings.get("ui"), dict):
         merged["ui"].update(settings["ui"])
     merged["datasets"] = settings.get("datasets") if isinstance(settings.get("datasets"), list) else []
+    merged["taggerModelDir"] = str(DEFAULT_TAGGER_MODEL_DIR)
     merged["engines"] = merge_engines(settings.get("engines"))
     write_json(SETTINGS_PATH, merged)
     return merged
@@ -1341,7 +1327,6 @@ def find_comfy_converter(engine_root: Path) -> Path | None:
     candidates = [
         engine_root / "networks" / "convert_anima_lora_to_comfy.py",
         DEFAULT_SD_SCRIPTS_ROOT / "networks" / "convert_anima_lora_to_comfy.py",
-        KNOWN_TOOL_ROOT / "sd-scripts" / "networks" / "convert_anima_lora_to_comfy.py",
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -2244,8 +2229,6 @@ def engine_setup_plan(payload: dict[str, Any]) -> dict[str, Any]:
     env = {"PYTHONIOENCODING": "utf-8", "PYTHONPATH": str(PROJECT_ROOT / "python")}
     plan = make_plan(f"engine_setup:{engine_id}", "engine_setup", PROJECT_ROOT, sys.executable, args, env, {"engineRoot": str(engine_root)})
     errors: list[str] = []
-    if engine_type in {"workflow_reference", "sd_scripts_reference"}:
-        errors.append(f"engine is a reference, not an execution engine: {engine.get('id')}")
     if not engine_root.exists():
         errors.append(f"engine root not found: {engine_root}")
     if errors and not payload.get("allowInvalid"):
